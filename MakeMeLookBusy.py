@@ -17,7 +17,6 @@ from tkinter import ttk, scrolledtext
 import threading
 import time
 import random
-import platform
 from datetime import datetime, timedelta
 
 try:
@@ -212,9 +211,6 @@ class BSODSimulation:
         self._tick()
 
     def _build_ui(self):
-        w = self.win.winfo_screenwidth()
-        h = self.win.winfo_screenheight()
-
         container = tk.Frame(self.win, bg="#0078d4")
         container.place(relx=0.5, rely=0.42, anchor="center")
 
@@ -508,7 +504,11 @@ class SecurityScanSimulation:
     def _update_elapsed(self):
         if not self.scanning or not self.win.winfo_exists():
             return
-        elapsed = time.time() - self.start_time
+        # Subtract paused time so elapsed matches progress percentage
+        paused = self.total_paused
+        if self._pause_start is not None:
+            paused += time.time() - self._pause_start
+        elapsed = time.time() - self.start_time - paused
         h, m, s = int(elapsed // 3600), int((elapsed % 3600) // 60), int(elapsed % 60)
         self.elapsed_label.config(text=f"{h:02d}:{m:02d}:{s:02d}")
         self.win.after(1000, self._update_elapsed)
@@ -1069,6 +1069,7 @@ any application, so nothing gets disrupted.
   \u2022 Slow, realistic progress percentage
   \u2022 "Don't turn off your computer" message
   \u2022 Hidden cursor, always-on-top
+  \u2022 Press ESC to exit
 
   Why it works: Everyone has been trapped by a Windows Update.
   Nobody questions it. Nobody tries to use your machine. The
