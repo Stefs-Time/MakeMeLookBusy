@@ -7,7 +7,7 @@ you "active" on all platforms while looking completely legit.
 
 Educational / demonstration project showing how activity
 simulation, fullscreen overlays, and idle-prevention work
-on Windows.
+across platforms (Windows, macOS, Linux).
 
 Requirements: pip install pyautogui
 """
@@ -17,9 +17,7 @@ from tkinter import ttk, scrolledtext
 import threading
 import time
 import random
-import os
-import sys
-import ctypes
+import platform
 from datetime import datetime, timedelta
 
 try:
@@ -34,7 +32,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════
 
 APP_TITLE = "MakeMeLookBusy"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 
 # Glassmorphic color palette
 BG_DARK = "#0b0f19"
@@ -118,18 +116,30 @@ class KeepAliveEngine:
     def __init__(self):
         self.running = False
         self._thread = None
+        self._lock = threading.Lock()
         self.mouse_interval = 55
         self.key_interval = 80
 
     def start(self):
-        if self.running:
-            return
-        self.running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+        with self._lock:
+            if self.running:
+                return
+            self.running = True
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
 
     def stop(self):
-        self.running = False
+        with self._lock:
+            self.running = False
+            thread = self._thread
+            self._thread = None
+        if thread and thread.is_alive():
+            thread.join(timeout=2)
+
+    @property
+    def available(self):
+        """Check if pyautogui is available for input injection."""
+        return pyautogui is not None
 
     def _loop(self):
         last_mouse = time.time()
@@ -156,6 +166,20 @@ class KeepAliveEngine:
 keep_alive = KeepAliveEngine()
 
 
+def _init_styles():
+    """Configure all ttk styles once. Call after root Tk is created."""
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("Green.Horizontal.TProgressbar",
+                     background=ACCENT, troughcolor="#1a2235")
+    style.configure("Cyan.Horizontal.TProgressbar",
+                     background=CYAN_ACCENT, troughcolor="#1a2235")
+    style.configure("Defrag.Horizontal.TProgressbar",
+                     background=ACCENT, troughcolor="#333333")
+    style.configure("Active.Horizontal.TProgressbar",
+                     background=YELLOW_ACCENT, troughcolor="#1a2235")
+
+
 # ═══════════════════════════════════════════════════════════════
 # SIMULATION: BSOD
 # ═══════════════════════════════════════════════════════════════
@@ -163,8 +187,11 @@ keep_alive = KeepAliveEngine()
 class BSODSimulation:
     """Fullscreen Windows 11 Blue Screen of Death."""
 
-    def __init__(self, parent_root, on_exit):
+    def __init__(self, parent_root, on_exit, duration_hours=2):
         self.on_exit = on_exit
+        self.duration = duration_hours * 3600
+        self.start_time = time.time()
+
         self.win = tk.Toplevel(parent_root)
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-topmost", True)
@@ -176,7 +203,6 @@ class BSODSimulation:
 
         # Bind escape
         self.win.bind("<Escape>", self._exit)
-        self.win.bind("<Key>", self._on_key)
 
         self._build_ui()
         keep_alive.start()
@@ -264,6 +290,13 @@ class BSODSimulation:
     def _tick(self):
         if not self.win.winfo_exists():
             return
+
+        # Check if duration has elapsed
+        elapsed = time.time() - self.start_time
+        if elapsed >= self.duration:
+            keep_alive.stop()
+            return
+
         if self.progress < 100:
             increment = random.choice([0, 0, 0, 0, 1, 1, 0, 0, 0, 1])
             self.progress = min(100, self.progress + increment)
@@ -274,10 +307,6 @@ class BSODSimulation:
             # Reset and loop
             self.progress = 0
             self.win.after(8000, self._tick)
-
-    def _on_key(self, event):
-        if event.keysym == "Escape":
-            self._exit()
 
     def _exit(self, event=None):
         keep_alive.stop()
@@ -337,6 +366,8 @@ class SecurityScanSimulation:
         self.scanning = False
         self.paused = False
         self.start_time = None
+        self.total_paused = 0
+        self._pause_start = None
 
         self.win = tk.Toplevel(parent_root)
         self.win.title("Cyber Threat Behavioral Analytics Engine v9.4")
@@ -395,13 +426,6 @@ class SecurityScanSimulation:
             prog_frame, text="OVERALL", font=("Consolas", 8),
             fg=TEXT_MUTED, bg="#0a0e17"
         ).pack(anchor="w")
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Green.Horizontal.TProgressbar",
-                         background=ACCENT, troughcolor="#1a2235")
-        style.configure("Cyan.Horizontal.TProgressbar",
-                         background=CYAN_ACCENT, troughcolor="#1a2235")
 
         self.overall_bar = ttk.Progressbar(
             prog_frame, length=1060, mode="determinate",
@@ -491,13 +515,16 @@ class SecurityScanSimulation:
 
     def _scan_loop(self):
         start = time.time()
-        while self.scanning and (time.time() - start < self.duration):
+        while self.scanning:
             while self.paused:
                 time.sleep(0.1)
                 if not self.scanning:
                     return
 
-            elapsed = time.time() - start
+            # Subtract paused time from elapsed for accurate progress
+            elapsed = time.time() - start - self.total_paused
+            if elapsed >= self.duration:
+                break
             overall = min(99, (elapsed / self.duration) * 100)
 
             try:
@@ -570,9 +597,13 @@ class SecurityScanSimulation:
     def _toggle_pause(self):
         self.paused = not self.paused
         if self.paused:
+            self._pause_start = time.time()
             self.pause_btn.config(text="RESUME", fg=ACCENT)
             self._log("=== SCAN PAUSED ===", "yellow")
         else:
+            if self._pause_start is not None:
+                self.total_paused += time.time() - self._pause_start
+                self._pause_start = None
             self.pause_btn.config(text="PAUSE", fg=YELLOW_ACCENT)
             self._log("=== SCAN RESUMED ===", "green")
 
@@ -635,6 +666,12 @@ class WindowsUpdateSimulation:
             container, text="Don't turn off your computer.",
             font=("Segoe UI", 14), fg="#999999", bg="#000000"
         ).pack()
+
+        # ESC hint (subtle, bottom of screen)
+        tk.Label(
+            self.win, text="Press ESC to exit",
+            font=("Segoe UI", 8), fg="#333333", bg="#000000"
+        ).place(relx=0.5, rely=0.97, anchor="center")
 
         self.spinner_step = 0
         self._animate_spinner()
@@ -772,10 +809,6 @@ class DiskDefragSimulation:
         )
         self.progress_label.pack(side="left", padx=10)
 
-        style = ttk.Style()
-        style.configure("Defrag.Horizontal.TProgressbar",
-                         background=ACCENT, troughcolor="#333333")
-
         self.progress_bar = ttk.Progressbar(
             self.win, length=800, mode="determinate",
             style="Defrag.Horizontal.TProgressbar"
@@ -819,24 +852,27 @@ class DiskDefragSimulation:
             "Reindexing file allocation table...",
         ]
 
+        num_drives = len(self.DRIVE_NAMES)
         drive_idx = 0
         while self.running and time.time() - self.start_time < self.duration:
             elapsed = time.time() - self.start_time
             pct = min(99, int((elapsed / self.duration) * 100))
 
-            # Update drive statuses
-            current_drive = drive_idx % len(self.DRIVE_NAMES)
+            # Calculate per-drive progress
+            drive_share = 100 // num_drives
+            drive_pct = min(99, int((pct - drive_idx * drive_share) / drive_share * 100)) if drive_idx < num_drives else 100
+
             try:
                 self.win.after(0, lambda p=pct: self.progress_bar.configure(value=p))
                 self.win.after(0, lambda p=pct: self.progress_label.config(text=f"{p}%"))
                 self.win.after(0, lambda a=random.choice(actions): self.action_label.config(text=a))
 
                 for i, lbl in enumerate(self.drive_labels):
-                    if i < current_drive:
+                    if i < drive_idx:
                         self.win.after(0, lambda l=lbl: l.config(text="OK (0% fragmented)", fg=ACCENT))
-                    elif i == current_drive:
-                        self.win.after(0, lambda l=lbl, p=pct: l.config(
-                            text=f"Optimizing ({p}%)", fg=ORANGE_ACCENT))
+                    elif i == drive_idx:
+                        self.win.after(0, lambda l=lbl, dp=drive_pct: l.config(
+                            text=f"Optimizing ({dp}%)", fg=ORANGE_ACCENT))
                     else:
                         self.win.after(0, lambda l=lbl: l.config(text="Queued", fg=YELLOW_ACCENT))
             except Exception:
@@ -846,7 +882,8 @@ class DiskDefragSimulation:
             if random.random() < 0.15:
                 self.win.after(0, self._draw_blocks)
 
-            if pct > 33 * (drive_idx + 1):
+            # Advance to next drive at evenly-spaced thresholds
+            if drive_idx < num_drives - 1 and pct >= drive_share * (drive_idx + 1):
                 drive_idx += 1
 
             time.sleep(random.uniform(1.0, 3.0))
@@ -893,10 +930,16 @@ class StayActiveSimulation:
             font=("Segoe UI", 18, "bold"), fg=TEXT_PRIMARY, bg=BG_DARK
         ).pack(pady=(5, 2))
 
-        tk.Label(
-            self.win, text="Mouse & keyboard activity running silently",
-            font=("Segoe UI", 9), fg=TEXT_SECONDARY, bg=BG_DARK
-        ).pack()
+        if keep_alive.available:
+            tk.Label(
+                self.win, text="Mouse & keyboard activity running silently",
+                font=("Segoe UI", 9), fg=TEXT_SECONDARY, bg=BG_DARK
+            ).pack()
+        else:
+            tk.Label(
+                self.win, text="\u26a0 pyautogui not installed \u2014 keep-alive disabled",
+                font=("Segoe UI", 9), fg=YELLOW_ACCENT, bg=BG_DARK
+            ).pack()
 
         self.time_label = tk.Label(
             self.win, text="Remaining: --:--:--",
@@ -904,21 +947,26 @@ class StayActiveSimulation:
         )
         self.time_label.pack(pady=20)
 
-        style = ttk.Style()
-        style.configure("Active.Horizontal.TProgressbar",
-                         background=YELLOW_ACCENT, troughcolor="#1a2235")
-
         self.progress = ttk.Progressbar(
             self.win, length=380, mode="determinate",
             style="Active.Horizontal.TProgressbar"
         )
         self.progress.pack(pady=(0, 15))
 
+        btn_frame = tk.Frame(self.win, bg=BG_DARK)
+        btn_frame.pack(pady=(0, 5))
+
         tk.Button(
-            self.win, text="STOP", font=("Segoe UI", 10, "bold"),
+            btn_frame, text="MINIMIZE", font=("Segoe UI", 9, "bold"),
+            bg="#1a2744", fg=ACCENT, relief="flat", padx=16, pady=4,
+            command=lambda: self.win.iconify(), cursor="hand2"
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            btn_frame, text="STOP", font=("Segoe UI", 10, "bold"),
             bg="#2a1525", fg=RED_ACCENT, relief="flat", padx=20, pady=4,
             command=self._exit, cursor="hand2"
-        ).pack()
+        ).pack(side="left")
 
     def _tick(self):
         if not self.running or not self.win.winfo_exists():
@@ -956,8 +1004,9 @@ DOCS_TEXT = """
 \u2501\u2501\u2501  WHAT IS THIS?  \u2501\u2501\u2501
 
 MakeMeLookBusy is an educational demonstration project that shows how
-desktop activity simulation works on Windows. It combines multiple
-"excuse screens" into a single launcher with a clean glassmorphic UI.
+desktop activity simulation works across platforms (Windows, macOS,
+Linux). It combines multiple "excuse screens" into a single launcher
+with a clean glassmorphic UI.
 
 Every mode has two jobs:
   1. Display a convincing fullscreen simulation
@@ -966,9 +1015,9 @@ Every mode has two jobs:
 
 \u2501\u2501\u2501  HOW DOES KEEP-ALIVE WORK?  \u2501\u2501\u2501
 
-Windows (and apps like Teams, Slack, etc.) detect idle status by
-monitoring input events. If no mouse movement or keystrokes happen
-for a threshold period (usually 3-5 minutes), you go "Away".
+Operating systems (and apps like Teams, Slack, etc.) detect idle
+status by monitoring input events. If no mouse movement or keystrokes
+happen for a threshold period (usually 3-5 minutes), you go "Away".
 
 MakeMeLookBusy prevents this with a background KeepAliveEngine that:
   \u2022 Moves the mouse by 1 pixel and back every ~55 seconds
@@ -989,6 +1038,7 @@ any application, so nothing gets disrupted.
   \u2022 Random real Windows stop codes
   \u2022 QR code placeholder and support URL
   \u2022 Hidden cursor, fullscreen, always-on-top
+  \u2022 Configurable duration (set before launch)
   \u2022 Press ESC to exit
 
   Why it works: Nobody approaches someone whose PC is BSOD'd. You
@@ -1045,10 +1095,11 @@ any application, so nothing gets disrupted.
   \u2022 Micro mouse movements (1px, invisible)
   \u2022 Periodic Shift key presses (no visible effect)
   \u2022 Set duration from 1-8 hours
+  \u2022 Minimize button to hide the control window
 
   Why it works: If you just need to step away without any cover
   story, this keeps every platform showing you as "Active" with
-  zero visual footprint. Minimize the window and walk away.
+  zero visual footprint. Hit Minimize and walk away.
 
 
 \u2501\u2501\u2501  TECHNICAL DETAILS  \u2501\u2501\u2501
@@ -1154,6 +1205,7 @@ class Launcher:
         self.active_sim = None
         self.duration_var = tk.IntVar(value=2)
 
+        _init_styles()
         self._build_ui()
 
     def _build_ui(self):
@@ -1174,6 +1226,17 @@ class Launcher:
             title_frame, text=f"  v{APP_VERSION}",
             font=("Segoe UI", 12), fg=TEXT_MUTED, bg=BG_DARK
         ).pack(side="left", pady=(12, 0))
+
+        # ── pyautogui warning ──
+        if not keep_alive.available:
+            warn_frame = tk.Frame(self.root, bg="#3a2200")
+            warn_frame.pack(fill="x", padx=30, pady=(0, 5))
+            tk.Label(
+                warn_frame,
+                text="\u26a0  pyautogui not installed \u2014 keep-alive (mouse/keyboard injection) is disabled. Install with: pip install pyautogui",
+                font=("Segoe UI", 9), fg=YELLOW_ACCENT, bg="#3a2200",
+                wraplength=860, justify="left"
+            ).pack(padx=10, pady=6)
 
         # ── Subtitle ──
         tk.Label(
@@ -1303,10 +1366,20 @@ class Launcher:
 
     def _launch(self, sim_id):
         """Launch the selected simulation."""
+        # Validate duration input
+        try:
+            dur = self.duration_var.get()
+            if dur < 1 or dur > 8:
+                raise ValueError
+        except (tk.TclError, ValueError):
+            self.duration_var.set(2)
+
         self.root.withdraw()
 
         if sim_id == "bsod":
-            self.active_sim = BSODSimulation(self.root, self._show_launcher)
+            self.active_sim = BSODSimulation(
+                self.root, self._show_launcher, self.duration_var.get()
+            )
         elif sim_id == "security_scan":
             self.active_sim = SecurityScanSimulation(
                 self.root, self._show_launcher, self.duration_var.get()
