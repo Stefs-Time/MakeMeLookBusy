@@ -31,7 +31,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════
 
 APP_TITLE = "MakeMeLookBusy"
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 
 # Glassmorphic color palette
 BG_DARK = "#0b0f19"
@@ -59,7 +59,7 @@ SIMULATIONS = [
         "icon": "\u2620",
         "title": "Blue Screen of Death",
         "subtitle": "Windows BSOD Simulation",
-        "desc": "Displays a pixel-perfect Windows 11 BSOD fullscreen. Nobody will bother you while your PC is 'crashed'. Press ESC to exit.",
+        "desc": "Pixel-perfect Windows 11 BSOD with random stop codes, looping progress, and hidden cursor. Auto-exits when duration expires. Press ESC to exit early.",
         "color": "#3498db",
     },
     {
@@ -67,7 +67,7 @@ SIMULATIONS = [
         "icon": "\U0001f6e1",
         "title": "Cyber Threat Scanner",
         "subtitle": "Enterprise Security Audit",
-        "desc": "Runs a convincing cybersecurity behavioral analytics scan with live console output, progress bars, threat flags, and AI analysis. Looks like a serious corporate security tool.",
+        "desc": "Enterprise security dashboard with live console, dual progress bars, 18 scan items, AI threat scoring, and pause/resume. Elapsed-time tracking stays accurate across pauses.",
         "color": "#00e5a0",
     },
     {
@@ -75,7 +75,7 @@ SIMULATIONS = [
         "icon": "\u2b6f",
         "title": "Windows Update",
         "subtitle": "System Update Simulation",
-        "desc": "Shows the classic Windows Update screen with a slowly creeping progress bar. 'Don't turn off your computer.' Nobody questions a Windows Update.",
+        "desc": "Classic Windows Update with animated spinner dots and slow, erratic progress. Fullscreen, hidden cursor, always-on-top. Auto-exits when done. ESC to exit early.",
         "color": "#0078d4",
     },
     {
@@ -83,7 +83,7 @@ SIMULATIONS = [
         "icon": "\u2b13",
         "title": "Disk Optimization",
         "subtitle": "Drive Defrag & Analysis",
-        "desc": "Simulates a Windows disk optimization/defragmentation process with drive analysis, block visualization, and detailed progress. A classic IT excuse.",
+        "desc": "Drive defragmentation with per-drive status tracking, live block map visualization, rotating action labels, and completion finalization. Stop button to exit.",
         "color": "#ff9f43",
     },
     {
@@ -91,7 +91,7 @@ SIMULATIONS = [
         "icon": "\u2615",
         "title": "Stay Active",
         "subtitle": "Invisible Keep-Alive",
-        "desc": "No flashy screen \u2014 just silently keeps your PC awake with micro mouse movements and shift key presses. All platforms see you as 'Active'. Set duration and walk away.",
+        "desc": "Silent keep-alive with micro mouse movements and shift key presses. Countdown timer, progress bar, and minimize button. Set duration (1-8h) and walk away.",
         "color": "#ffd32a",
     },
     {
@@ -99,7 +99,7 @@ SIMULATIONS = [
         "icon": "\u2139",
         "title": "Documentation",
         "subtitle": "How It Works & Why",
-        "desc": "Full breakdown of every simulation mode, the techniques used, and the educational purpose behind this project.",
+        "desc": "Full breakdown of every simulation mode, keep-alive mechanics, technical details, launcher features, and usage notes.",
         "color": "#7a8ba8",
     },
 ]
@@ -113,23 +113,27 @@ class KeepAliveEngine:
     """Background thread that prevents idle/away status."""
 
     def __init__(self):
-        self.running = False
+        self._running = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
         self.mouse_interval = 55
         self.key_interval = 80
 
+    @property
+    def running(self):
+        return self._running.is_set()
+
     def start(self):
         with self._lock:
-            if self.running:
+            if self._running.is_set():
                 return
-            self.running = True
+            self._running.set()
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
 
     def stop(self):
         with self._lock:
-            self.running = False
+            self._running.clear()
             thread = self._thread
             self._thread = None
         if thread and thread.is_alive():
@@ -143,7 +147,7 @@ class KeepAliveEngine:
     def _loop(self):
         last_mouse = time.time()
         last_key = time.time()
-        while self.running:
+        while self._running.is_set():
             now = time.time()
             if pyautogui and now - last_mouse > self.mouse_interval:
                 try:
@@ -290,7 +294,7 @@ class BSODSimulation:
         # Check if duration has elapsed
         elapsed = time.time() - self.start_time
         if elapsed >= self.duration:
-            keep_alive.stop()
+            self._exit()
             return
 
         if self.progress < 100:
@@ -514,7 +518,6 @@ class SecurityScanSimulation:
         self.win.after(1000, self._update_elapsed)
 
     def _scan_loop(self):
-        start = time.time()
         while self.scanning:
             while self.paused:
                 time.sleep(0.1)
@@ -522,7 +525,7 @@ class SecurityScanSimulation:
                     return
 
             # Subtract paused time from elapsed for accurate progress
-            elapsed = time.time() - start - self.total_paused
+            elapsed = time.time() - self.start_time - self.total_paused
             if elapsed >= self.duration:
                 break
             overall = min(99, (elapsed / self.duration) * 100)
@@ -608,6 +611,8 @@ class SecurityScanSimulation:
             self._log("=== SCAN RESUMED ===", "green")
 
     def _exit(self):
+        if not self.scanning:
+            return
         self.scanning = False
         keep_alive.stop()
         self.win.destroy()
@@ -691,8 +696,7 @@ class WindowsUpdateSimulation:
 
         elapsed = time.time() - self.start_time
         if elapsed >= self.duration:
-            self.progress_label.config(text="100% complete")
-            keep_alive.stop()
+            self._exit()
             return
 
         # Slow, realistic progress
@@ -888,6 +892,19 @@ class DiskDefragSimulation:
 
             time.sleep(random.uniform(1.0, 3.0))
 
+        # Show completion state
+        if self.running:
+            try:
+                self.win.after(0, lambda: self.progress_bar.configure(value=100))
+                self.win.after(0, lambda: self.progress_label.config(text="100%"))
+                self.win.after(0, lambda: self.action_label.config(
+                    text="All drives have been optimized.", fg=ACCENT))
+                for lbl in self.drive_labels:
+                    self.win.after(0, lambda l=lbl: l.config(
+                        text="OK (0% fragmented)", fg=ACCENT))
+            except Exception:
+                pass
+
     def _exit(self):
         self.running = False
         keep_alive.stop()
@@ -1012,6 +1029,9 @@ Every mode has two jobs:
   1. Display a convincing fullscreen simulation
   2. Keep your PC marked as "Active" on all platforms
 
+All timed modes auto-exit when the configured duration expires and
+return you to the launcher automatically.
+
 
 \u2501\u2501\u2501  HOW DOES KEEP-ALIVE WORK?  \u2501\u2501\u2501
 
@@ -1023,7 +1043,9 @@ MakeMeLookBusy prevents this with a background KeepAliveEngine that:
   \u2022 Moves the mouse by 1 pixel and back every ~55 seconds
   \u2022 Sends a Shift key press every ~80 seconds
   \u2022 Runs on a daemon thread so it doesn't block the UI
+  \u2022 Uses thread-safe signaling (threading.Event) for start/stop
   \u2022 Uses pyautogui for cross-application input injection
+  \u2022 Gracefully degrades if pyautogui is not installed
 
 The movements are invisible (1px) and Shift alone has no effect in
 any application, so nothing gets disrupted.
@@ -1035,11 +1057,11 @@ any application, so nothing gets disrupted.
   Renders a pixel-perfect Windows 11 blue screen with:
   \u2022 The iconic ":(" sad face
   \u2022 Slowly creeping percentage counter (0-100%, then loops)
-  \u2022 Random real Windows stop codes
+  \u2022 Random real Windows stop codes (8 variants)
   \u2022 QR code placeholder and support URL
   \u2022 Hidden cursor, fullscreen, always-on-top
-  \u2022 Configurable duration (set before launch)
-  \u2022 Press ESC to exit
+  \u2022 Configurable duration (1-8 hours, auto-exits when done)
+  \u2022 Press ESC to exit early
 
   Why it works: Nobody approaches someone whose PC is BSOD'd. You
   get left completely alone. The keep-alive runs underneath so your
@@ -1054,8 +1076,9 @@ any application, so nothing gets disrupted.
   \u2022 Dual progress bars (overall + current module)
   \u2022 AI threat scoring messages
   \u2022 Anomaly and latency spike events
-  \u2022 Pause/Resume functionality
-  \u2022 Configurable duration (set before launch)
+  \u2022 Pause/Resume with accurate elapsed-time tracking
+  \u2022 Configurable duration (1-8 hours)
+  \u2022 Double-exit protection prevents crashes
 
   Why it works: If anyone glances at your screen, they see a serious
   corporate security tool running. The scrolling green text and
@@ -1069,7 +1092,8 @@ any application, so nothing gets disrupted.
   \u2022 Slow, realistic progress percentage
   \u2022 "Don't turn off your computer" message
   \u2022 Hidden cursor, always-on-top
-  \u2022 Press ESC to exit
+  \u2022 Configurable duration (1-8 hours, auto-exits when done)
+  \u2022 Press ESC to exit early
 
   Why it works: Everyone has been trapped by a Windows Update.
   Nobody questions it. Nobody tries to use your machine. The
@@ -1079,10 +1103,11 @@ any application, so nothing gets disrupted.
 
 \u2590 DISK OPTIMIZATION
   A Windows-style drive defragmentation tool:
-  \u2022 Drive list with SSD/HDD types and status
+  \u2022 Drive list with SSD/HDD types and per-drive status
   \u2022 Colorful block map visualization that updates live
-  \u2022 Rotating action descriptions
-  \u2022 Per-drive status progression
+  \u2022 Rotating action descriptions (8 action types)
+  \u2022 Per-drive status progression (Queued \u2192 Optimizing \u2192 OK)
+  \u2022 Completion state finalization when all drives are done
   \u2022 Realistic progress bar
 
   Why it works: Disk optimization is a known "IT maintenance" task.
@@ -1095,22 +1120,34 @@ any application, so nothing gets disrupted.
   \u2022 Tiny control window with countdown timer
   \u2022 Micro mouse movements (1px, invisible)
   \u2022 Periodic Shift key presses (no visible effect)
-  \u2022 Set duration from 1-8 hours
+  \u2022 Set duration from 1-8 hours (validated input)
   \u2022 Minimize button to hide the control window
+  \u2022 Progress bar showing elapsed time
 
   Why it works: If you just need to step away without any cover
   story, this keeps every platform showing you as "Active" with
   zero visual footprint. Hit Minimize and walk away.
 
 
+\u2501\u2501\u2501  LAUNCHER FEATURES  \u2501\u2501\u2501
+
+  \u2022 Glassmorphic card-based UI with dark theme
+  \u2022 Flicker-free hover effects on simulation cards
+  \u2022 Duration input with validation (only 1-8 accepted)
+  \u2022 Simulation registry pattern for clean extensibility
+  \u2022 Auto-center on screen, non-resizable
+
+
 \u2501\u2501\u2501  TECHNICAL DETAILS  \u2501\u2501\u2501
 
   Framework:        Python + Tkinter (built-in, no web server)
   Input Injection:  pyautogui (cross-platform mouse/keyboard)
+  Thread Safety:    threading.Event for KeepAliveEngine signaling
   Threading:        daemon threads for background activity
   UI Updates:       root.after() for thread-safe GUI updates
   Fullscreen:       tk attributes -fullscreen + -topmost
   Cursor Hide:      config(cursor="none") on fullscreen windows
+  Dispatch:         Registry dict for simulation class lookup
 
   pyautogui.FAILSAFE is ON \u2014 move mouse to top-left corner
   to force-quit if anything goes wrong.
@@ -1122,7 +1159,9 @@ any application, so nothing gets disrupted.
   \u2022 Run:                 python MakeMeLookBusy.py
   \u2022 ESC exits fullscreen modes (BSOD, Windows Update)
   \u2022 Close window / Stop button exits windowed modes
+  \u2022 All timed modes auto-exit when duration expires
   \u2022 pyautogui failsafe: move mouse to (0,0) corner to abort
+  \u2022 Duration accepts only integers 1-8 (validated)
 
 
 \u2501\u2501\u2501  DISCLAIMER  \u2501\u2501\u2501
@@ -1130,6 +1169,7 @@ any application, so nothing gets disrupted.
   This is an EDUCATIONAL project demonstrating UI simulation,
   input injection, and idle-prevention techniques. It is provided
   for learning purposes and should be used responsibly.
+  See DISCLAIMER.md for full liability waiver.
 """
 
 
@@ -1209,6 +1249,16 @@ class Launcher:
         _init_styles()
         self._build_ui()
 
+    @staticmethod
+    def _validate_duration(value):
+        """Allow only empty string (mid-edit) or integers 1-8."""
+        if value == "":
+            return True
+        try:
+            return 1 <= int(value) <= 8
+        except ValueError:
+            return False
+
     def _build_ui(self):
         # ── Header ──
         header = tk.Frame(self.root, bg=BG_DARK, height=90)
@@ -1255,9 +1305,11 @@ class Launcher:
             font=("Segoe UI", 9), fg=TEXT_SECONDARY, bg=BG_DARK
         ).pack(side="left", padx=(0, 8))
 
+        vcmd = (self.root.register(self._validate_duration), "%P")
         dur_spin = tk.Spinbox(
             dur_frame, from_=1, to=8, width=3,
             textvariable=self.duration_var,
+            validate="key", validatecommand=vcmd,
             font=("Consolas", 11), justify="center",
             bg=BG_INPUT, fg=ACCENT, insertbackground=ACCENT,
             highlightthickness=1, highlightbackground=BORDER,
@@ -1346,24 +1398,54 @@ class Launcher:
 
         # Hover effects - bind to all children
         all_widgets = [card, inner, icon_label, title_label, sub_label, desc_label]
+        card._hover_widgets = all_widgets
+        card._hover_active = False
         for widget in all_widgets:
-            widget.bind("<Enter>", lambda e, c=card, a=all_widgets, s=sim:
-                self._on_hover(c, a, s, True))
-            widget.bind("<Leave>", lambda e, c=card, a=all_widgets, s=sim:
-                self._on_hover(c, a, s, False))
+            widget.bind("<Enter>", lambda e, c=card, s=sim:
+                self._on_card_enter(c, s))
+            widget.bind("<Leave>", lambda e, c=card, s=sim:
+                self._on_card_leave(c, s))
             widget.bind("<Button-1>", lambda e, s=sim: self._launch(s["id"]))
 
         return card
 
-    def _on_hover(self, card, widgets, sim, entering):
+    def _on_card_enter(self, card, sim):
+        if card._hover_active:
+            return
+        card._hover_active = True
+        self._apply_hover(card, sim, True)
+
+    def _on_card_leave(self, card, sim):
+        # Check if mouse is still within the card bounds
+        try:
+            mx = card.winfo_pointerx() - card.winfo_rootx()
+            my = card.winfo_pointery() - card.winfo_rooty()
+            if 0 <= mx <= card.winfo_width() and 0 <= my <= card.winfo_height():
+                return
+        except Exception:
+            pass
+        card._hover_active = False
+        self._apply_hover(card, sim, False)
+
+    def _apply_hover(self, card, sim, entering):
         bg = BG_CARD_HOVER if entering else BG_CARD
         border = sim["color"] if entering else BORDER
         card.config(bg=bg, highlightbackground=border)
-        for w in widgets:
+        for w in card._hover_widgets:
             try:
                 w.config(bg=bg)
             except Exception:
                 pass
+
+    # Simulation registry: id -> (class, takes_duration)
+    SIM_REGISTRY = {
+        "bsod":          (BSODSimulation,          True),
+        "security_scan": (SecurityScanSimulation,  True),
+        "windows_update":(WindowsUpdateSimulation, True),
+        "disk_defrag":   (DiskDefragSimulation,    True),
+        "stay_active":   (StayActiveSimulation,    True),
+        "docs":          (DocumentationViewer,     False),
+    }
 
     def _launch(self, sim_id):
         """Launch the selected simulation."""
@@ -1375,30 +1457,19 @@ class Launcher:
         except (tk.TclError, ValueError):
             self.duration_var.set(2)
 
+        entry = self.SIM_REGISTRY.get(sim_id)
+        if entry is None:
+            return
+
         self.root.withdraw()
 
-        if sim_id == "bsod":
-            self.active_sim = BSODSimulation(
+        sim_class, takes_duration = entry
+        if takes_duration:
+            self.active_sim = sim_class(
                 self.root, self._show_launcher, self.duration_var.get()
             )
-        elif sim_id == "security_scan":
-            self.active_sim = SecurityScanSimulation(
-                self.root, self._show_launcher, self.duration_var.get()
-            )
-        elif sim_id == "windows_update":
-            self.active_sim = WindowsUpdateSimulation(
-                self.root, self._show_launcher, self.duration_var.get()
-            )
-        elif sim_id == "disk_defrag":
-            self.active_sim = DiskDefragSimulation(
-                self.root, self._show_launcher, self.duration_var.get()
-            )
-        elif sim_id == "stay_active":
-            self.active_sim = StayActiveSimulation(
-                self.root, self._show_launcher, self.duration_var.get()
-            )
-        elif sim_id == "docs":
-            self.active_sim = DocumentationViewer(self.root, self._show_launcher)
+        else:
+            self.active_sim = sim_class(self.root, self._show_launcher)
 
     def _show_launcher(self):
         """Return to the launcher after a simulation exits."""
