@@ -4,7 +4,8 @@
 
 **MakeMeLookBusy** is an **educational and demonstration project** created to
 illustrate desktop UI simulation techniques, idle-prevention mechanisms, and
-fullscreen overlay rendering on Windows using Python and Tkinter.
+fullscreen overlay rendering across platforms (Windows, macOS, Linux) using
+Python and Tkinter.
 
 This software is **not** designed, intended, or marketed to:
 
@@ -23,12 +24,12 @@ for educational purposes:
 
 | Feature | Technical Concept Demonstrated |
 |---|---|
-| **BSOD Simulation** | Fullscreen Tkinter overlays, cursor hiding, `wm_attributes`, real-time percentage rendering, and UI layout replication. |
-| **Cyber Threat Scanner** | Threaded console output, weighted random status generation, progress bar styling with `ttk.Style`, timestamped log formatting, and dashboard layout design. |
-| **Windows Update Screen** | Canvas-based animation (spinning dots using trigonometry), erratic progress simulation, and fullscreen window management. |
-| **Disk Optimization** | Grid-based block map visualization, multi-drive state management, randomized color mapping, and live canvas updates. |
-| **Stay Active (Keep-Alive)** | Background daemon threads, `pyautogui` input injection (mouse micro-movements and key presses), and cross-platform idle-prevention techniques. |
-| **Glassmorphic Launcher** | Modern UI design patterns in Tkinter, hover effects, custom color palettes, card-based layouts, and event binding. |
+| **BSOD Simulation** | Fullscreen Tkinter overlays, cursor hiding, `wm_attributes`, real-time percentage rendering, UI layout replication, and auto-exit on duration expiry. |
+| **Cyber Threat Scanner** | Threaded console output, weighted random status generation, progress bar styling with `ttk.Style`, timestamped log formatting, pause/resume with elapsed-time tracking, and dashboard layout design. |
+| **Windows Update Screen** | Canvas-based animation (spinning dots), erratic progress simulation, fullscreen window management, and auto-exit on duration expiry. |
+| **Disk Optimization** | Grid-based block map visualization, multi-drive state management, per-drive progress tracking, randomized color mapping, live canvas updates, and completion state finalization. |
+| **Stay Active (Keep-Alive)** | Background daemon threads, thread-safe `threading.Event` signaling, `pyautogui` input injection (mouse micro-movements and key presses), and cross-platform idle-prevention techniques. |
+| **Glassmorphic Launcher** | Modern UI design patterns in Tkinter, flicker-free hover effects, input validation, custom color palettes, card-based layouts, simulation registry pattern, and event binding. |
 
 ---
 
