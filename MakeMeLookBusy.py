@@ -204,8 +204,9 @@ class BSODSimulation:
         # Hide cursor
         self.win.config(cursor="none")
 
-        # Bind escape
+        # Bind escape and close
         self.win.bind("<Escape>", self._exit)
+        self.win.protocol("WM_DELETE_WINDOW", self._exit)
 
         self._build_ui()
         keep_alive.start()
@@ -309,6 +310,8 @@ class BSODSimulation:
             self.win.after(8000, self._tick)
 
     def _exit(self, event=None):
+        if not self.win.winfo_exists():
+            return
         keep_alive.stop()
         self.win.destroy()
         self.on_exit()
@@ -589,6 +592,8 @@ class SecurityScanSimulation:
             self.win.after(0, lambda: self._update_bars(100, 100))
             self.win.after(0, lambda: self.status_label.config(text="COMPLETE"))
             self.win.after(0, lambda: self.percent_label.config(text="100%"))
+            # Auto-exit after brief delay to show completion
+            self.win.after(3000, self._exit)
 
     def _update_bars(self, overall, module):
         try:
@@ -639,6 +644,7 @@ class WindowsUpdateSimulation:
         self.win.focus_force()
 
         self.win.bind("<Escape>", self._exit)
+        self.win.protocol("WM_DELETE_WINDOW", self._exit)
 
         self.progress = 0
         self._build_ui()
@@ -711,6 +717,8 @@ class WindowsUpdateSimulation:
         self.win.after(delay, self._tick)
 
     def _exit(self, event=None):
+        if not self.win.winfo_exists():
+            return
         keep_alive.stop()
         self.win.destroy()
         self.on_exit()
@@ -835,8 +843,9 @@ class DiskDefragSimulation:
 
     def _draw_blocks(self):
         self.canvas.delete("all")
-        colors = ["#00e5a0", "#0078d4", "#ff9f43", "#ff4757", "#333333", "#1a1a1a"]
-        weights = [40, 20, 8, 3, 20, 9]
+        colors = ["#00e5a0", "#0078d4", "#ff9f43", "#ff4757",
+                  "#ffd32a", "#9b59b6", "#333333", "#1a1a1a"]
+        weights = [35, 18, 8, 3, 6, 4, 18, 8]
         bw, bh = 10, 10
         for row in range(16):
             for col in range(80):
@@ -864,7 +873,7 @@ class DiskDefragSimulation:
 
             # Calculate per-drive progress
             drive_share = 100 // num_drives
-            drive_pct = min(99, int((pct - drive_idx * drive_share) / drive_share * 100)) if drive_idx < num_drives else 100
+            drive_pct = min(99, max(0, int((pct - drive_idx * drive_share) / drive_share * 100))) if drive_idx < num_drives else 100
 
             try:
                 self.win.after(0, lambda p=pct: self.progress_bar.configure(value=p))
@@ -902,10 +911,14 @@ class DiskDefragSimulation:
                 for lbl in self.drive_labels:
                     self.win.after(0, lambda l=lbl: l.config(
                         text="OK (0% fragmented)", fg=ACCENT))
+                # Auto-exit after brief delay to show completion
+                self.win.after(3000, self._exit)
             except Exception:
                 pass
 
     def _exit(self):
+        if not self.running:
+            return
         self.running = False
         keep_alive.stop()
         self.win.destroy()
@@ -999,12 +1012,21 @@ class StayActiveSimulation:
 
         if remaining <= 0:
             self.time_label.config(text="Done!", fg=ACCENT)
+            self.progress["value"] = 100
             keep_alive.stop()
+            self.running = False
+            # Auto-return to launcher after brief pause
+            self.win.after(2000, self._exit)
             return
 
         self.win.after(1000, self._tick)
 
     def _exit(self):
+        if not self.running and self.win.winfo_exists():
+            # Natural completion path — just destroy and return
+            self.win.destroy()
+            self.on_exit()
+            return
         self.running = False
         keep_alive.stop()
         self.win.destroy()
