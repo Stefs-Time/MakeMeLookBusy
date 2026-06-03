@@ -1093,7 +1093,14 @@ class StayActiveSimulation:
             self.win, length=380, mode="determinate",
             style="Active.Horizontal.TProgressbar"
         )
-        self.progress.pack(pady=(0, 15))
+        self.progress.pack(pady=(0, 8))
+
+        # Live keep-alive activity readout
+        self.stats_label = tk.Label(
+            self.win, text="",
+            font=("Consolas", 8), fg=TEXT_MUTED, bg=BG_DARK
+        )
+        self.stats_label.pack(pady=(0, 8))
 
         btn_frame = tk.Frame(self.win, bg=BG_DARK)
         btn_frame.pack(pady=(0, 5))
@@ -1121,6 +1128,15 @@ class StayActiveSimulation:
         self.progress["value"] = pct
         td = str(timedelta(seconds=int(remaining)))
         self.time_label.config(text=f"Remaining: {td}")
+
+        # Reflect the live keep-alive counters so the user can see it working
+        if keep_alive.available:
+            s = keep_alive.stats()
+            self.stats_label.config(
+                text=f"profile: {s['profile']}   mouse: {s['mouse_moves']}   "
+                     f"keys: {s['key_presses']}   last: {s['last_action']}")
+        else:
+            self.stats_label.config(text="keep-alive disabled (pyautogui missing)")
 
         if remaining <= 0:
             self.time_label.config(text="Done!", fg=ACCENT)
@@ -1732,7 +1748,7 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
   \u2022 Random real Windows stop codes (8 variants)
   \u2022 QR code placeholder and support URL
   \u2022 Hidden cursor, fullscreen, always-on-top
-  \u2022 Configurable duration (1-8 hours, auto-exits when done)
+  \u2022 Configurable duration (hours or minutes, auto-exits when done)
   \u2022 Press ESC to exit early
 
   Why it works: Nobody approaches someone whose PC is BSOD'd. You
@@ -1749,7 +1765,7 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
   \u2022 AI threat scoring messages
   \u2022 Anomaly and latency spike events
   \u2022 Pause/Resume with accurate elapsed-time tracking
-  \u2022 Configurable duration (1-8 hours)
+  \u2022 Configurable duration (hours or minutes)
   \u2022 Double-exit protection prevents crashes
 
   Why it works: If anyone glances at your screen, they see a serious
@@ -1764,7 +1780,7 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
   \u2022 Slow, realistic progress percentage
   \u2022 "Don't turn off your computer" message
   \u2022 Hidden cursor, always-on-top
-  \u2022 Configurable duration (1-8 hours, auto-exits when done)
+  \u2022 Configurable duration (hours or minutes, auto-exits when done)
   \u2022 Press ESC to exit early
 
   Why it works: Everyone has been trapped by a Windows Update.
@@ -1790,9 +1806,10 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
 \u2590 STAY ACTIVE (Invisible Mode)
   No flashy screen \u2014 pure stealth:
   \u2022 Tiny control window with countdown timer
-  \u2022 Micro mouse movements (1px, invisible)
-  \u2022 Periodic Shift key presses (no visible effect)
-  \u2022 Set duration from 1-8 hours (validated input)
+  \u2022 Micro mouse movements (1px, invisible) + occasional scroll
+  \u2022 Periodic harmless key presses (Shift/Ctrl/F13-F15, rotated)
+  \u2022 Set duration in hours or minutes (validated input)
+  \u2022 Live keep-alive readout: profile, mouse/key counts, last action
   \u2022 Minimize button to hide the control window
   \u2022 Progress bar showing elapsed time
 
@@ -1856,6 +1873,8 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
 
   Framework:        Python + Tkinter (built-in, no web server)
   Input Injection:  pyautogui (cross-platform mouse/keyboard)
+  Intensity:        Stealth / Normal / Aggressive timing profiles
+  Jitter:           +/-25% randomization on every interval
   Thread Safety:    threading.Event for KeepAliveEngine signaling
   Threading:        daemon threads for background activity
   UI Updates:       root.after() for thread-safe GUI updates
@@ -1871,11 +1890,12 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
 
   \u2022 Install dependency:  pip install pyautogui
   \u2022 Run:                 python MakeMeLookBusy.py
-  \u2022 ESC exits fullscreen modes (BSOD, Windows Update)
-  \u2022 Close window / Stop button exits windowed modes
+  \u2022 ESC exits ANY simulation (fullscreen or windowed)
+  \u2022 Close window / Stop button also exits windowed modes
   \u2022 All timed modes auto-exit when duration expires
   \u2022 pyautogui failsafe: move mouse to (0,0) corner to abort
-  \u2022 Duration accepts only integers 1-8 (validated)
+  \u2022 Duration: 1-8 hours OR 1-480 minutes (validated)
+  \u2022 Keep-alive intensity + "Surprise Me" live on the launcher
 
 
 \u2501\u2501\u2501  DISCLAIMER  \u2501\u2501\u2501
@@ -1898,6 +1918,7 @@ class DocumentationViewer:
         self.win.geometry("800x650")
         self.win.configure(bg=BG_DARK)
         self.win.protocol("WM_DELETE_WINDOW", self._exit)
+        self.win.bind("<Escape>", lambda e: self._exit())
 
         self._build_ui()
 
@@ -2083,6 +2104,14 @@ class Launcher:
             command=self._launch_random
         ).pack(side="left", padx=(16, 0))
 
+        # Live hint describing the selected keep-alive profile
+        self.intensity_hint = tk.Label(
+            self.root,
+            text=self._intensity_hint_text(),
+            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
+        )
+        self.intensity_hint.pack(pady=(0, 12))
+
         # ── Card Grid ──
         grid_frame = tk.Frame(self.root, bg=BG_DARK)
         grid_frame.pack(fill="both", expand=True, padx=30, pady=(0, 25))
@@ -2206,9 +2235,18 @@ class Launcher:
         "docs":          (DocumentationViewer,     False),
     }
 
+    def _intensity_hint_text(self):
+        """Build the hint line for the currently selected profile."""
+        name = self.intensity_var.get()
+        prof = KEEP_ALIVE_PROFILES.get(name, KEEP_ALIVE_PROFILES[DEFAULT_PROFILE])
+        return (f"{name}: {prof['desc']}  "
+                f"(mouse ~{prof['mouse']}s / key ~{prof['key']}s)")
+
     def _on_intensity_change(self, *_):
         """Apply the chosen keep-alive intensity profile immediately."""
         keep_alive.set_profile(self.intensity_var.get())
+        if hasattr(self, "intensity_hint"):
+            self.intensity_hint.config(text=self._intensity_hint_text())
 
     def _launch_random(self):
         """Pick and launch a random simulation (excluding docs)."""

@@ -45,12 +45,12 @@ pip install -r requirements.txt
 python MakeMeLookBusy.py
 ```
 
-The glassmorphic launcher will open. Select a simulation mode and set a duration (1-8 hours). All timed modes auto-return to the launcher on completion.
+The glassmorphic launcher will open. Pick a simulation mode, set a duration (in hours or minutes), choose a keep-alive intensity, or hit **🎲 Surprise Me** for a random mode. All timed modes auto-return to the launcher on completion.
 
 ### Controls
 
-- **ESC** -- Exit fullscreen simulations (BSOD, Windows Update)
-- **Stop/Exit buttons** -- Exit windowed simulations (Scanner, Defrag, Stay Active)
+- **ESC** -- Exit *any* simulation instantly (fullscreen or windowed)
+- **Stop / Minimize buttons** -- Exit or hide windowed simulations (Scanner, Defrag, Stay Active, Code Compiler, AI Training)
 - **pyautogui failsafe** -- Move mouse to screen corner (0, 0) to force-stop input injection
 
 ## How It Works
