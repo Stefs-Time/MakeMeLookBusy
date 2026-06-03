@@ -17,6 +17,8 @@ from tkinter import ttk, scrolledtext
 import threading
 import time
 import random
+import string
+import math
 from datetime import datetime, timedelta
 
 try:
@@ -31,7 +33,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════
 
 APP_TITLE = "MakeMeLookBusy"
-APP_VERSION = "2.2"
+APP_VERSION = "3.0"
 
 # Glassmorphic color palette
 BG_DARK = "#0b0f19"
@@ -51,6 +53,9 @@ YELLOW_ACCENT = "#ffd32a"
 BLUE_ACCENT = "#3498db"
 CYAN_ACCENT = "#00d2d3"
 ORANGE_ACCENT = "#ff9f43"
+PURPLE_ACCENT = "#9b59b6"
+MAGENTA_ACCENT = "#e056fd"
+MATRIX_GREEN = "#00ff41"
 
 # Simulation card definitions
 SIMULATIONS = [
@@ -95,6 +100,30 @@ SIMULATIONS = [
         "color": "#ffd32a",
     },
     {
+        "id": "code_build",
+        "icon": "\u2328",
+        "title": "Code Compiler",
+        "subtitle": "Build & Test Pipeline",
+        "desc": "Developer build console: resolves dependencies, compiles modules, bundles assets, and runs a passing test suite with live scrolling output. Looks like you're deep in a build. ESC or Stop to exit.",
+        "color": "#9b59b6",
+    },
+    {
+        "id": "ai_training",
+        "icon": "\U0001f9e0",
+        "title": "AI Model Training",
+        "subtitle": "Neural Net Trainer",
+        "desc": "Deep-learning training dashboard with live loss/accuracy curves, epoch counter, animated layer activations, and GPU telemetry. Nobody interrupts a model mid-training. ESC or Stop to exit.",
+        "color": "#e056fd",
+    },
+    {
+        "id": "matrix_rain",
+        "icon": "\U0001f4a7",
+        "title": "Matrix Rain",
+        "subtitle": "Digital Rain Screensaver",
+        "desc": "Fullscreen cascading green digital rain with glowing lead characters and fading trails. Pure hacker aesthetic. Hidden cursor, always-on-top, auto-exits when done. Press ESC to exit early.",
+        "color": "#00ff41",
+    },
+    {
         "id": "docs",
         "icon": "\u2139",
         "title": "Documentation",
@@ -109,15 +138,56 @@ SIMULATIONS = [
 # KEEP-ALIVE ENGINE (shared across all simulation modes)
 # ═══════════════════════════════════════════════════════════════
 
-class KeepAliveEngine:
-    """Background thread that prevents idle/away status."""
+# Intensity profiles control how often (and how) activity is injected.
+# Each profile defines base mouse/key intervals in seconds.
+KEEP_ALIVE_PROFILES = {
+    "Stealth": {
+        "mouse": 110, "key": 150,
+        "desc": "Longest gaps — minimal footprint, just enough to stay green.",
+    },
+    "Normal": {
+        "mouse": 55, "key": 80,
+        "desc": "Balanced default — reliable across Teams, Slack, and the OS.",
+    },
+    "Aggressive": {
+        "mouse": 25, "key": 35,
+        "desc": "Frequent nudges — never lets the idle timer get close.",
+    },
+}
+DEFAULT_PROFILE = "Normal"
 
-    def __init__(self):
+# Harmless keys that have no visible effect in virtually any application.
+HARMLESS_KEYS = ["shift", "ctrl", "f13", "f14", "f15"]
+
+
+class KeepAliveEngine:
+    """Background thread that prevents idle/away status.
+
+    Supports selectable intensity profiles, randomized timing jitter so the
+    activity never looks robotic, a rotating set of harmless keys, occasional
+    micro mouse-scrolls, and live activity statistics.
+    """
+
+    def __init__(self, profile=DEFAULT_PROFILE):
         self._running = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
-        self.mouse_interval = 55
-        self.key_interval = 80
+        self.jitter = 0.25  # +/- 25% randomization on every interval
+        self.mouse_moves = 0
+        self.key_presses = 0
+        self.last_action = "idle"
+        self.set_profile(profile)
+
+    def set_profile(self, name):
+        """Select an intensity profile (Stealth / Normal / Aggressive)."""
+        prof = KEEP_ALIVE_PROFILES.get(name, KEEP_ALIVE_PROFILES[DEFAULT_PROFILE])
+        self.profile = name if name in KEEP_ALIVE_PROFILES else DEFAULT_PROFILE
+        self.mouse_interval = prof["mouse"]
+        self.key_interval = prof["key"]
+
+    def _jittered(self, base):
+        """Return base interval +/- the jitter fraction so timing varies."""
+        return base * (1 + random.uniform(-self.jitter, self.jitter))
 
     @property
     def running(self):
@@ -138,30 +208,65 @@ class KeepAliveEngine:
             self._thread = None
         if thread and thread.is_alive():
             thread.join(timeout=2)
+        self.last_action = "stopped"
 
     @property
     def available(self):
         """Check if pyautogui is available for input injection."""
         return pyautogui is not None
 
+    def stats(self):
+        """Return a snapshot of activity counters for UI display."""
+        return {
+            "profile": self.profile,
+            "mouse_moves": self.mouse_moves,
+            "key_presses": self.key_presses,
+            "last_action": self.last_action,
+        }
+
+    def _do_mouse(self):
+        """Inject an invisible mouse nudge; occasionally a tiny scroll."""
+        if not pyautogui:
+            return
+        try:
+            if random.random() < 0.2:
+                pyautogui.scroll(random.choice([-1, 1]))
+                self.last_action = "scroll"
+            else:
+                dx = random.choice([-1, 1])
+                pyautogui.moveRel(dx, 0, duration=0.05)
+                pyautogui.moveRel(-dx, 0, duration=0.05)
+                self.last_action = "mouse"
+            self.mouse_moves += 1
+        except Exception:
+            pass
+
+    def _do_key(self):
+        """Press a randomly chosen harmless key."""
+        if not pyautogui:
+            return
+        try:
+            pyautogui.press(random.choice(HARMLESS_KEYS))
+            self.key_presses += 1
+            self.last_action = "key"
+        except Exception:
+            pass
+
     def _loop(self):
         last_mouse = time.time()
         last_key = time.time()
+        mouse_wait = self._jittered(self.mouse_interval)
+        key_wait = self._jittered(self.key_interval)
         while self._running.is_set():
             now = time.time()
-            if pyautogui and now - last_mouse > self.mouse_interval:
-                try:
-                    pyautogui.moveRel(1, 0, duration=0.05)
-                    pyautogui.moveRel(-1, 0, duration=0.05)
-                except Exception:
-                    pass
+            if now - last_mouse > mouse_wait:
+                self._do_mouse()
                 last_mouse = now
-            if pyautogui and now - last_key > self.key_interval:
-                try:
-                    pyautogui.press("shift")
-                except Exception:
-                    pass
+                mouse_wait = self._jittered(self.mouse_interval)
+            if now - last_key > key_wait:
+                self._do_key()
                 last_key = now
+                key_wait = self._jittered(self.key_interval)
             time.sleep(0.5)
 
 
@@ -181,6 +286,10 @@ def _init_styles():
                      background=ACCENT, troughcolor="#333333")
     style.configure("Active.Horizontal.TProgressbar",
                      background=YELLOW_ACCENT, troughcolor="#1a2235")
+    style.configure("Purple.Horizontal.TProgressbar",
+                     background=PURPLE_ACCENT, troughcolor="#1a2235")
+    style.configure("Magenta.Horizontal.TProgressbar",
+                     background=MAGENTA_ACCENT, troughcolor="#1a2235")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -377,6 +486,7 @@ class SecurityScanSimulation:
         self.win.geometry("1100x750")
         self.win.configure(bg="#0a0e17")
         self.win.protocol("WM_DELETE_WINDOW", self._exit)
+        self.win.bind("<Escape>", lambda e: self._exit())
 
         self._build_ui()
         self._start_scan()
@@ -744,6 +854,7 @@ class DiskDefragSimulation:
         self.win.geometry("850x620")
         self.win.configure(bg="#1e1e1e")
         self.win.protocol("WM_DELETE_WINDOW", self._exit)
+        self.win.bind("<Escape>", lambda e: self._exit())
 
         self._build_ui()
         keep_alive.start()
@@ -944,6 +1055,7 @@ class StayActiveSimulation:
         self.win.configure(bg=BG_DARK)
         self.win.resizable(False, False)
         self.win.protocol("WM_DELETE_WINDOW", self._exit)
+        self.win.bind("<Escape>", lambda e: self._exit())
 
         self._build_ui()
         keep_alive.start()
@@ -1034,6 +1146,537 @@ class StayActiveSimulation:
 
 
 # ═══════════════════════════════════════════════════════════════
+# SIMULATION: CODE COMPILER / BUILD PIPELINE
+# ═══════════════════════════════════════════════════════════════
+
+class CodeBuildSimulation:
+    """Fake developer build & test pipeline with a live scrolling console."""
+
+    PACKAGES = [
+        "react", "react-dom", "webpack", "babel-core", "typescript",
+        "eslint", "jest", "lodash", "axios", "redux", "express",
+        "tailwindcss", "vite", "rollup", "postcss", "prettier",
+        "@types/node", "ts-loader", "sass", "chalk", "commander",
+    ]
+
+    MODULES = [
+        "src/index.ts", "src/app.tsx", "src/store/reducer.ts",
+        "src/components/Header.tsx", "src/components/Sidebar.tsx",
+        "src/utils/format.ts", "src/api/client.ts", "src/hooks/useAuth.ts",
+        "src/services/cache.ts", "src/models/user.ts", "src/router.tsx",
+        "src/styles/theme.ts", "src/middleware/logger.ts", "src/db/pool.ts",
+    ]
+
+    TESTS = [
+        "auth.service.spec", "user.model.spec", "format.util.spec",
+        "cache.service.spec", "router.spec", "reducer.spec",
+        "client.api.spec", "header.component.spec", "hooks.spec",
+    ]
+
+    def __init__(self, parent_root, on_exit, duration_hours=2):
+        self.on_exit = on_exit
+        self.duration = duration_hours * 3600
+        self.start_time = time.time()
+        self.running = True
+
+        self.win = tk.Toplevel(parent_root)
+        self.win.title("Terminal — npm run build")
+        self.win.geometry("1000x680")
+        self.win.configure(bg="#0a0e17")
+        self.win.protocol("WM_DELETE_WINDOW", self._exit)
+        self.win.bind("<Escape>", lambda e: self._exit())
+
+        self._build_ui()
+        keep_alive.start()
+        threading.Thread(target=self._build_loop, daemon=True).start()
+
+    def _build_ui(self):
+        title_frame = tk.Frame(self.win, bg="#0d1220", height=46)
+        title_frame.pack(fill="x")
+        title_frame.pack_propagate(False)
+
+        tk.Label(
+            title_frame, text="⌨  build-pipeline — zsh",
+            font=("Consolas", 13, "bold"), fg=PURPLE_ACCENT, bg="#0d1220"
+        ).pack(side="left", padx=15, pady=10)
+
+        self.stage_label = tk.Label(
+            title_frame, text="initializing…",
+            font=("Consolas", 11), fg=TEXT_SECONDARY, bg="#0d1220"
+        )
+        self.stage_label.pack(side="right", padx=15)
+
+        prog_frame = tk.Frame(self.win, bg="#0a0e17", pady=6)
+        prog_frame.pack(fill="x", padx=15)
+        self.progress_bar = ttk.Progressbar(
+            prog_frame, length=970, mode="determinate",
+            style="Purple.Horizontal.TProgressbar"
+        )
+        self.progress_bar.pack(fill="x")
+
+        self.console = scrolledtext.ScrolledText(
+            self.win, bg="#05080f", fg="#c8d3e6",
+            font=("Consolas", 10), insertbackground=PURPLE_ACCENT,
+            relief="flat", bd=0, highlightthickness=1,
+            highlightcolor=BORDER, highlightbackground=BORDER,
+        )
+        self.console.pack(fill="both", expand=True, padx=15, pady=(4, 8))
+        self.console.tag_configure("green", foreground=ACCENT)
+        self.console.tag_configure("yellow", foreground=YELLOW_ACCENT)
+        self.console.tag_configure("purple", foreground=PURPLE_ACCENT)
+        self.console.tag_configure("cyan", foreground=CYAN_ACCENT)
+        self.console.tag_configure("muted", foreground=TEXT_MUTED)
+        self.console.tag_configure("white", foreground=TEXT_PRIMARY)
+        self.console.tag_configure("red", foreground=RED_ACCENT)
+
+        bottom = tk.Frame(self.win, bg="#0d1220", height=44)
+        bottom.pack(fill="x")
+        bottom.pack_propagate(False)
+        tk.Button(
+            bottom, text="STOP & EXIT", bg="#2a1525", fg=RED_ACCENT,
+            font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+            padx=16, pady=4, cursor="hand2", command=self._exit
+        ).pack(side="left", padx=15, pady=8)
+
+    def _log(self, msg, tag="white"):
+        self.console.insert("end", f"{msg}\n", tag)
+        self.console.see("end")
+
+    def _set_stage(self, text):
+        try:
+            self.stage_label.config(text=text)
+        except Exception:
+            pass
+
+    def _emit(self, msg, tag="white"):
+        """Thread-safe console write."""
+        if not self.running:
+            return
+        try:
+            self.win.after(0, lambda: self._log(msg, tag))
+        except Exception:
+            pass
+
+    def _set_progress(self, pct):
+        try:
+            self.win.after(0, lambda: self.progress_bar.configure(value=pct))
+        except Exception:
+            pass
+
+    def _build_loop(self):
+        cycle = 0
+        while self.running and time.time() - self.start_time < self.duration:
+            cycle += 1
+            self._emit(f"\n$ npm run build  — cycle #{cycle}", "purple")
+            self._emit("", "muted")
+
+            # Stage 1: install dependencies
+            self.win.after(0, lambda: self._set_stage("installing dependencies"))
+            self._emit("> resolving dependency tree…", "muted")
+            for pkg in random.sample(self.PACKAGES, random.randint(6, 11)):
+                if not self.running:
+                    return
+                ver = f"{random.randint(1,18)}.{random.randint(0,20)}.{random.randint(0,30)}"
+                self._emit(f"  + {pkg}@{ver}", "green")
+                self._sleep(random.uniform(0.05, 0.18))
+            self._emit("  added 312 packages in 4.7s", "muted")
+
+            # Stage 2: compile modules
+            self.win.after(0, lambda: self._set_stage("compiling"))
+            self._emit("\n> tsc --build", "cyan")
+            for mod in random.sample(self.MODULES, random.randint(7, 12)):
+                if not self.running:
+                    return
+                self._emit(f"  ✓ compiled {mod}", "white")
+                self._sleep(random.uniform(0.08, 0.22))
+            if random.random() < 0.4:
+                self._emit("  ⚠ deprecation: 'componentWillMount' is deprecated", "yellow")
+
+            # Stage 3: bundle
+            self.win.after(0, lambda: self._set_stage("bundling"))
+            self._emit("\n> vite build", "cyan")
+            for chunk in ["vendor", "main", "runtime", "polyfills", "styles"]:
+                if not self.running:
+                    return
+                kb = random.randint(40, 980)
+                self._emit(f"  dist/{chunk}.[hash].js   {kb:>4} KiB", "white")
+                self._sleep(random.uniform(0.1, 0.3))
+            self._emit("  built in 8.42s", "muted")
+
+            # Stage 4: tests
+            self.win.after(0, lambda: self._set_stage("running tests"))
+            self._emit("\n> jest --coverage", "cyan")
+            passed = 0
+            for spec in random.sample(self.TESTS, random.randint(5, 9)):
+                if not self.running:
+                    return
+                n = random.randint(3, 12)
+                passed += n
+                self._emit(f"  PASS  {spec}  ({n} tests)", "green")
+                self._sleep(random.uniform(0.12, 0.28))
+            self._emit(f"\nTest Suites: all passed  —  Tests: {passed} passed", "green")
+            cov = random.randint(82, 99)
+            self._emit(f"Coverage: {cov}% statements  |  build OK ✨", "green")
+
+            # Progress tracks elapsed/duration so it mirrors real runtime
+            elapsed = time.time() - self.start_time
+            self._set_progress(min(99, (elapsed / self.duration) * 100))
+            self._emit("\n— watching for changes —", "muted")
+            self._sleep(random.uniform(1.5, 3.5))
+
+        if self.running:
+            self._set_progress(100)
+            self.win.after(0, lambda: self._set_stage("done"))
+            self._emit("\n✅ Pipeline finished cleanly.", "green")
+            self.win.after(3000, self._exit)
+
+    def _sleep(self, secs):
+        """Interruptible sleep that bails out when stopped."""
+        end = time.time() + secs
+        while self.running and time.time() < end:
+            time.sleep(0.03)
+
+    def _exit(self):
+        if not self.running:
+            return
+        self.running = False
+        keep_alive.stop()
+        self.win.destroy()
+        self.on_exit()
+
+
+# ═══════════════════════════════════════════════════════════════
+# SIMULATION: AI MODEL TRAINING
+# ═══════════════════════════════════════════════════════════════
+
+class AITrainingSimulation:
+    """Deep-learning training dashboard with live loss/accuracy curves."""
+
+    MODELS = [
+        "transformer-xl-1.3B", "resnet152-finetune", "bert-large-uncased",
+        "gpt-neo-2.7B", "vit-h14", "stable-diffusion-unet", "yolo-v8x",
+    ]
+    DATASETS = ["ImageNet-21k", "C4-en", "LAION-400M", "COCO-2017",
+                "OpenWebText", "WikiText-103", "Common Crawl"]
+
+    def __init__(self, parent_root, on_exit, duration_hours=2):
+        self.on_exit = on_exit
+        self.duration = duration_hours * 3600
+        self.start_time = time.time()
+        self.running = True
+        self.model = random.choice(self.MODELS)
+        self.dataset = random.choice(self.DATASETS)
+        self.total_epochs = random.randint(40, 120)
+        self.loss = random.uniform(4.0, 6.5)
+        self.acc = random.uniform(0.05, 0.15)
+        self.loss_history = []
+
+        self.win = tk.Toplevel(parent_root)
+        self.win.title(f"TrainerHub — {self.model}")
+        self.win.geometry("1040x700")
+        self.win.configure(bg="#0a0e17")
+        self.win.protocol("WM_DELETE_WINDOW", self._exit)
+        self.win.bind("<Escape>", lambda e: self._exit())
+
+        self._build_ui()
+        keep_alive.start()
+        threading.Thread(target=self._train_loop, daemon=True).start()
+        self._animate_layers()
+
+    def _build_ui(self):
+        header = tk.Frame(self.win, bg="#0d1220", height=50)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(
+            header, text=f"\U0001f9e0  TrainerHub  —  {self.model}",
+            font=("Consolas", 14, "bold"), fg=MAGENTA_ACCENT, bg="#0d1220"
+        ).pack(side="left", padx=15, pady=10)
+        tk.Label(
+            header, text=f"dataset: {self.dataset}",
+            font=("Consolas", 10), fg=TEXT_SECONDARY, bg="#0d1220"
+        ).pack(side="right", padx=15)
+
+        # Metric cards
+        metrics = tk.Frame(self.win, bg="#0a0e17")
+        metrics.pack(fill="x", padx=15, pady=(10, 4))
+        self.metric_labels = {}
+        for key, title, color in [
+            ("epoch", "EPOCH", CYAN_ACCENT), ("loss", "LOSS", RED_ACCENT),
+            ("acc", "ACCURACY", ACCENT), ("lr", "LEARN RATE", YELLOW_ACCENT),
+            ("gpu", "GPU UTIL", MAGENTA_ACCENT),
+        ]:
+            card = tk.Frame(metrics, bg="#131a2b", highlightbackground=BORDER,
+                            highlightthickness=1)
+            card.pack(side="left", expand=True, fill="x", padx=4)
+            tk.Label(card, text=title, font=("Consolas", 8),
+                     fg=TEXT_MUTED, bg="#131a2b").pack(anchor="w", padx=10, pady=(8, 0))
+            val = tk.Label(card, text="—", font=("Consolas", 18, "bold"),
+                           fg=color, bg="#131a2b")
+            val.pack(anchor="w", padx=10, pady=(0, 8))
+            self.metric_labels[key] = val
+
+        # Loss curve canvas
+        tk.Label(self.win, text="TRAINING LOSS", font=("Consolas", 8),
+                 fg=TEXT_MUTED, bg="#0a0e17").pack(anchor="w", padx=18, pady=(8, 0))
+        self.curve = tk.Canvas(self.win, height=180, bg="#05080f",
+                               highlightthickness=1, highlightbackground=BORDER)
+        self.curve.pack(fill="x", padx=15, pady=(2, 8))
+
+        # Layer activation bars
+        tk.Label(self.win, text="LAYER ACTIVATIONS", font=("Consolas", 8),
+                 fg=TEXT_MUTED, bg="#0a0e17").pack(anchor="w", padx=18)
+        self.layers = tk.Canvas(self.win, height=120, bg="#05080f",
+                                highlightthickness=1, highlightbackground=BORDER)
+        self.layers.pack(fill="x", padx=15, pady=(2, 8))
+
+        # Overall progress + log
+        self.progress_bar = ttk.Progressbar(
+            self.win, length=1010, mode="determinate",
+            style="Magenta.Horizontal.TProgressbar"
+        )
+        self.progress_bar.pack(fill="x", padx=15, pady=(0, 6))
+
+        self.log = scrolledtext.ScrolledText(
+            self.win, bg="#05080f", fg=TEXT_SECONDARY, height=6,
+            font=("Consolas", 9), relief="flat", bd=0,
+            highlightthickness=1, highlightcolor=BORDER,
+            highlightbackground=BORDER,
+        )
+        self.log.pack(fill="both", expand=True, padx=15, pady=(0, 6))
+        self.log.tag_configure("magenta", foreground=MAGENTA_ACCENT)
+        self.log.tag_configure("green", foreground=ACCENT)
+        self.log.tag_configure("muted", foreground=TEXT_MUTED)
+
+        bottom = tk.Frame(self.win, bg="#0d1220", height=42)
+        bottom.pack(fill="x")
+        bottom.pack_propagate(False)
+        tk.Button(
+            bottom, text="STOP & EXIT", bg="#2a1525", fg=RED_ACCENT,
+            font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+            padx=16, pady=4, cursor="hand2", command=self._exit
+        ).pack(side="left", padx=15, pady=7)
+
+    def _animate_layers(self):
+        """Continuously redraw the layer-activation bar chart on the UI thread."""
+        if not self.running or not self.win.winfo_exists():
+            return
+        try:
+            c = self.layers
+            c.delete("all")
+            w = c.winfo_width() or 1000
+            h = c.winfo_height() or 120
+            n = 32
+            bw = w / n
+            for i in range(n):
+                val = abs(math.sin(time.time() * 1.5 + i * 0.4)) * random.uniform(0.3, 1.0)
+                bh = val * (h - 8)
+                x = i * bw
+                shade = "#%02x%02x%02x" % (
+                    int(80 + val * 120), int(40 + val * 60), int(140 + val * 100))
+                c.create_rectangle(x + 1, h - bh, x + bw - 1, h, fill=shade, outline="")
+        except Exception:
+            pass
+        self.win.after(120, self._animate_layers)
+
+    def _draw_curve(self):
+        try:
+            c = self.curve
+            c.delete("all")
+            w = c.winfo_width() or 1000
+            h = c.winfo_height() or 180
+            if len(self.loss_history) < 2:
+                return
+            hi = max(self.loss_history)
+            lo = min(self.loss_history)
+            rng = (hi - lo) or 1
+            pts = []
+            n = len(self.loss_history)
+            for i, v in enumerate(self.loss_history):
+                x = (i / (n - 1)) * (w - 10) + 5
+                y = h - 10 - ((v - lo) / rng) * (h - 20)
+                pts.extend([x, y])
+            if len(pts) >= 4:
+                c.create_line(*pts, fill=RED_ACCENT, width=2, smooth=True)
+        except Exception:
+            pass
+
+    def _log(self, msg, tag="muted"):
+        try:
+            self.log.insert("end", f"{msg}\n", tag)
+            self.log.see("end")
+        except Exception:
+            pass
+
+    def _train_loop(self):
+        self.win.after(0, lambda: self._log(
+            f"Initializing {self.model} on 8× A100  —  {self.total_epochs} epochs", "magenta"))
+        epoch = 0
+        while self.running and time.time() - self.start_time < self.duration:
+            elapsed = time.time() - self.start_time
+            frac = min(0.999, elapsed / self.duration)
+            epoch = int(frac * self.total_epochs) + 1
+
+            # Loss decays toward a small floor; accuracy climbs toward ~0.99
+            target_loss = 0.08 + (1 - frac) ** 1.6 * 5.5
+            self.loss += (target_loss - self.loss) * 0.3 + random.uniform(-0.04, 0.04)
+            self.loss = max(0.03, self.loss)
+            target_acc = 0.99 - (1 - frac) ** 1.4 * 0.9
+            self.acc += (target_acc - self.acc) * 0.3 + random.uniform(-0.005, 0.005)
+            self.acc = min(0.999, max(0.0, self.acc))
+            lr = 3e-4 * (0.5 ** (epoch / 20))
+            gpu = random.randint(91, 100)
+
+            self.loss_history.append(self.loss)
+            if len(self.loss_history) > 120:
+                self.loss_history.pop(0)
+
+            def update():
+                if not self.running:
+                    return
+                self.metric_labels["epoch"].config(text=f"{epoch}/{self.total_epochs}")
+                self.metric_labels["loss"].config(text=f"{self.loss:.4f}")
+                self.metric_labels["acc"].config(text=f"{self.acc*100:.2f}%")
+                self.metric_labels["lr"].config(text=f"{lr:.1e}")
+                self.metric_labels["gpu"].config(text=f"{gpu}%")
+                self.progress_bar.configure(value=frac * 100)
+                self._draw_curve()
+            try:
+                self.win.after(0, update)
+            except Exception:
+                return
+
+            if random.random() < 0.5:
+                step = random.randint(100, 9000)
+                self.win.after(0, lambda e=epoch, s=step: self._log(
+                    f"epoch {e:>3}  step {s:>5}  loss {self.loss:.4f}  acc {self.acc*100:.2f}%"))
+            if random.random() < 0.08:
+                self.win.after(0, lambda: self._log(
+                    "  checkpoint saved → ckpt/epoch_latest.pt", "green"))
+
+            time.sleep(random.uniform(0.4, 1.1))
+
+        if self.running:
+            self.win.after(0, lambda: self._log(
+                "✅ Training complete — best model exported.", "green"))
+            self.win.after(0, lambda: self.progress_bar.configure(value=100))
+            self.win.after(3000, self._exit)
+
+    def _exit(self):
+        if not self.running:
+            return
+        self.running = False
+        keep_alive.stop()
+        self.win.destroy()
+        self.on_exit()
+
+
+# ═══════════════════════════════════════════════════════════════
+# SIMULATION: MATRIX DIGITAL RAIN
+# ═══════════════════════════════════════════════════════════════
+
+class MatrixRainSimulation:
+    """Fullscreen cascading green digital rain (Matrix screensaver style)."""
+
+    GLYPHS = (string.ascii_letters + string.digits +
+              "アイウエオカキクケコ"
+              "サシスセソ¥#@%&*+<>=")
+    # Trail brightness shades, dimmest -> brightest (head is MATRIX_GREEN)
+    SHADES = ["#063b16", "#0a5a22", "#10883a", "#1fc24d", "#5dff8f"]
+
+    def __init__(self, parent_root, on_exit, duration_hours=2):
+        self.on_exit = on_exit
+        self.duration = duration_hours * 3600
+        self.start_time = time.time()
+        self.running = True
+        self.font_size = 16
+        self.cell = self.font_size + 2
+        self.trail = 16
+
+        self.win = tk.Toplevel(parent_root)
+        self.win.attributes("-fullscreen", True)
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg="black")
+        self.win.config(cursor="none")
+        self.win.focus_force()
+        self.win.bind("<Escape>", self._exit)
+        self.win.protocol("WM_DELETE_WINDOW", self._exit)
+
+        self.canvas = tk.Canvas(self.win, bg="black", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        # ESC hint, fades into the rain
+        tk.Label(self.win, text="Press ESC to exit",
+                 font=("Consolas", 9), fg="#0a5a22", bg="black").place(
+            relx=0.5, rely=0.98, anchor="center")
+
+        self.win.after(60, self._setup_columns)
+        keep_alive.start()
+        self.win.after(120, self._tick)
+
+    def _setup_columns(self):
+        self.win.update_idletasks()
+        w = self.win.winfo_width() or 1280
+        h = self.win.winfo_height() or 720
+        self.rows = max(8, h // self.cell)
+        self.cols = max(8, w // self.cell)
+        # Each column: head row (float) + falling speed
+        self.heads = [random.uniform(-self.rows, 0) for _ in range(self.cols)]
+        self.speeds = [random.uniform(0.4, 1.4) for _ in range(self.cols)]
+
+    def _rand_glyph(self):
+        return random.choice(self.GLYPHS)
+
+    def _tick(self):
+        if not self.running or not self.win.winfo_exists():
+            return
+
+        # Auto-exit when duration expires
+        if time.time() - self.start_time >= self.duration:
+            self._exit()
+            return
+
+        if not hasattr(self, "heads"):
+            self.win.after(60, self._tick)
+            return
+
+        c = self.canvas
+        c.delete("all")
+        font = ("Consolas", self.font_size, "bold")
+        for col in range(self.cols):
+            head = self.heads[col]
+            x = col * self.cell + self.cell // 2
+            for t in range(self.trail):
+                row = int(head) - t
+                if row < 0 or row >= self.rows:
+                    continue
+                y = row * self.cell + self.cell // 2
+                if t == 0:
+                    color = "#ffffff"  # bright leading char
+                elif t == 1:
+                    color = MATRIX_GREEN
+                else:
+                    idx = max(0, len(self.SHADES) - 1 - (t // 3))
+                    color = self.SHADES[idx]
+                c.create_text(x, y, text=self._rand_glyph(),
+                              fill=color, font=font)
+            # Advance head; reset to top once fully off-screen
+            self.heads[col] += self.speeds[col]
+            if self.heads[col] - self.trail > self.rows:
+                self.heads[col] = random.uniform(-6, 0)
+                self.speeds[col] = random.uniform(0.4, 1.4)
+
+        self.win.after(55, self._tick)
+
+    def _exit(self, event=None):
+        if not self.running or not self.win.winfo_exists():
+            return
+        self.running = False
+        keep_alive.stop()
+        self.win.destroy()
+        self.on_exit()
+
+
+# ═══════════════════════════════════════════════════════════════
 # DOCUMENTATION VIEWER
 # ═══════════════════════════════════════════════════════════════
 
@@ -1062,15 +1705,22 @@ status by monitoring input events. If no mouse movement or keystrokes
 happen for a threshold period (usually 3-5 minutes), you go "Away".
 
 MakeMeLookBusy prevents this with a background KeepAliveEngine that:
-  \u2022 Moves the mouse by 1 pixel and back every ~55 seconds
-  \u2022 Sends a Shift key press every ~80 seconds
+  \u2022 Moves the mouse by 1 pixel and back (and the occasional 1-notch scroll)
+  \u2022 Sends a harmless key press (Shift / Ctrl / F13-F15, rotated)
+  \u2022 Adds \u00b125% random jitter to every interval so it never looks robotic
   \u2022 Runs on a daemon thread so it doesn't block the UI
   \u2022 Uses thread-safe signaling (threading.Event) for start/stop
   \u2022 Uses pyautogui for cross-application input injection
+  \u2022 Tracks live activity stats (mouse moves / key presses)
   \u2022 Gracefully degrades if pyautogui is not installed
 
-The movements are invisible (1px) and Shift alone has no effect in
-any application, so nothing gets disrupted.
+The movements are invisible (1px) and the chosen keys have no effect
+in any application, so nothing gets disrupted.
+
+KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
+  \u2022 Stealth     \u2014 mouse ~110s / key ~150s   (minimal footprint)
+  \u2022 Normal      \u2014 mouse ~55s  / key ~80s     (balanced default)
+  \u2022 Aggressive  \u2014 mouse ~25s  / key ~35s     (never lets idle near)
 
 
 \u2501\u2501\u2501  SIMULATION MODES  \u2501\u2501\u2501
@@ -1151,11 +1801,53 @@ any application, so nothing gets disrupted.
   zero visual footprint. Hit Minimize and walk away.
 
 
+\u2590 CODE COMPILER (Build & Test Pipeline)
+  A developer build console that loops convincingly through:
+  \u2022 Dependency resolution (real-looking package@version lines)
+  \u2022 TypeScript compilation of source modules
+  \u2022 Vite/Rollup-style asset bundling with chunk sizes
+  \u2022 A green, all-passing Jest test suite + coverage report
+  \u2022 "watching for changes" idle state between cycles
+  \u2022 Live progress bar tied to elapsed runtime
+  \u2022 ESC or Stop & Exit to leave
+
+  Why it works: A scrolling build log screams "deep in dev work."
+  No one interrupts a developer mid-compile.
+
+
+\u2590 AI MODEL TRAINING (Neural Net Trainer)
+  A deep-learning training dashboard featuring:
+  \u2022 Live metric cards: epoch, loss, accuracy, learn rate, GPU util
+  \u2022 A real-time training-loss curve drawn on a canvas
+  \u2022 Animated layer-activation bar chart
+  \u2022 Decaying loss / climbing accuracy that track the duration
+  \u2022 Checkpoint-save log events
+  \u2022 ESC or Stop & Exit to leave
+
+  Why it works: Training runs take hours and must not be disturbed.
+  It's the most untouchable "I'm busy" screen of all.
+
+
+\u2590 MATRIX RAIN (Digital Rain Screensaver)
+  Pure aesthetic cover \u2014 fullscreen cascading green code:
+  \u2022 Columns of falling glyphs with bright leading characters
+  \u2022 Fading green trails over a black background
+  \u2022 Latin, digit, and katakana glyph set
+  \u2022 Hidden cursor, fullscreen, always-on-top
+  \u2022 Auto-exits when duration expires; ESC to exit early
+
+  Why it works: It looks like a screensaver or "something technical
+  running." Eye-catching enough that people leave it (and you) alone.
+
+
 \u2501\u2501\u2501  LAUNCHER FEATURES  \u2501\u2501\u2501
 
   \u2022 Glassmorphic card-based UI with dark theme
   \u2022 Flicker-free hover effects on simulation cards
-  \u2022 Duration input with validation (only 1-8 accepted)
+  \u2022 Duration input in HOURS or MINUTES (validated)
+  \u2022 Keep-alive intensity selector (Stealth / Normal / Aggressive)
+  \u2022 "\ud83c\udfb2 Surprise Me" button launches a random simulation
+  \u2022 Universal ESC panic-exit on every simulation window
   \u2022 Simulation registry pattern for clean extensibility
   \u2022 Auto-center on screen, non-resizable
 
@@ -1253,7 +1945,8 @@ class Launcher:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(f"{APP_TITLE} v{APP_VERSION}")
-        self.root.geometry("920x720")
+        self.W, self.H = 960, 880
+        self.root.geometry(f"{self.W}x{self.H}")
         self.root.configure(bg=BG_DARK)
         self.root.resizable(False, False)
 
@@ -1261,25 +1954,39 @@ class Launcher:
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        x = (sw - 920) // 2
-        y = (sh - 720) // 2
-        self.root.geometry(f"920x720+{x}+{y}")
+        x = (sw - self.W) // 2
+        y = max(0, (sh - self.H) // 2)
+        self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
 
         self.active_sim = None
         self.duration_var = tk.IntVar(value=2)
+        self.unit_var = tk.StringVar(value="hours")
+        self.intensity_var = tk.StringVar(value=DEFAULT_PROFILE)
 
         _init_styles()
         self._build_ui()
 
     @staticmethod
     def _validate_duration(value):
-        """Allow only empty string (mid-edit) or integers 1-8."""
+        """Allow only empty string (mid-edit) or integers 1-480."""
         if value == "":
             return True
         try:
-            return 1 <= int(value) <= 8
+            return 1 <= int(value) <= 480
         except ValueError:
             return False
+
+    def _duration_hours(self):
+        """Resolve the duration control to a number of hours (float)."""
+        try:
+            val = self.duration_var.get()
+        except tk.TclError:
+            val = 2
+        if val < 1:
+            val = 1
+        if self.unit_var.get() == "minutes":
+            return max(1, val) / 60.0
+        return min(max(val, 1), 8)
 
     def _build_ui(self):
         # ── Header ──
@@ -1329,7 +2036,7 @@ class Launcher:
 
         vcmd = (self.root.register(self._validate_duration), "%P")
         dur_spin = tk.Spinbox(
-            dur_frame, from_=1, to=8, width=3,
+            dur_frame, from_=1, to=480, width=4,
             textvariable=self.duration_var,
             validate="key", validatecommand=vcmd,
             font=("Consolas", 11), justify="center",
@@ -1340,15 +2047,41 @@ class Launcher:
         )
         dur_spin.pack(side="left")
 
-        tk.Label(
-            dur_frame, text="hours",
-            font=("Segoe UI", 9), fg=TEXT_SECONDARY, bg=BG_DARK
-        ).pack(side="left", padx=(8, 0))
+        # Unit toggle: hours or minutes
+        unit_menu = tk.OptionMenu(dur_frame, self.unit_var, "hours", "minutes")
+        unit_menu.config(font=("Segoe UI", 9), bg=BG_INPUT, fg=TEXT_PRIMARY,
+                         activebackground=BG_CARD_HOVER, activeforeground=ACCENT,
+                         relief="flat", bd=0, highlightthickness=1,
+                         highlightbackground=BORDER, width=7, cursor="hand2")
+        unit_menu["menu"].config(bg=BG_CARD, fg=TEXT_PRIMARY,
+                                 activebackground=ACCENT, activeforeground=BG_DARK)
+        unit_menu.pack(side="left", padx=(8, 0))
 
+        # Keep-alive intensity selector
         tk.Label(
-            dur_frame, text="(applies to timed modes)",
-            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
-        ).pack(side="left", padx=(12, 0))
+            dur_frame, text="   Keep-alive",
+            font=("Segoe UI", 9), fg=TEXT_SECONDARY, bg=BG_DARK
+        ).pack(side="left", padx=(12, 6))
+
+        intensity_menu = tk.OptionMenu(
+            dur_frame, self.intensity_var, *KEEP_ALIVE_PROFILES.keys(),
+            command=self._on_intensity_change)
+        intensity_menu.config(font=("Segoe UI", 9), bg=BG_INPUT, fg=ACCENT,
+                              activebackground=BG_CARD_HOVER, activeforeground=ACCENT,
+                              relief="flat", bd=0, highlightthickness=1,
+                              highlightbackground=BORDER, width=10, cursor="hand2")
+        intensity_menu["menu"].config(bg=BG_CARD, fg=TEXT_PRIMARY,
+                                      activebackground=ACCENT, activeforeground=BG_DARK)
+        intensity_menu.pack(side="left")
+
+        # Surprise Me — launches a random simulation
+        tk.Button(
+            dur_frame, text="\U0001f3b2  Surprise Me",
+            font=("Segoe UI", 9, "bold"), bg="#1a2744", fg=ACCENT,
+            activebackground=BG_CARD_HOVER, activeforeground=ACCENT_GLOW,
+            relief="flat", bd=0, padx=14, pady=3, cursor="hand2",
+            command=self._launch_random
+        ).pack(side="left", padx=(16, 0))
 
         # ── Card Grid ──
         grid_frame = tk.Frame(self.root, bg=BG_DARK)
@@ -1363,7 +2096,8 @@ class Launcher:
 
         for c in range(3):
             grid_frame.columnconfigure(c, weight=1)
-        for r in range(2):
+        num_rows = (len(SIMULATIONS) + 2) // 3
+        for r in range(num_rows):
             grid_frame.rowconfigure(r, weight=1)
 
         # ── Footer ──
@@ -1371,7 +2105,7 @@ class Launcher:
         footer.pack(fill="x")
         tk.Label(
             footer,
-            text="ESC exits fullscreen modes  \u2022  pyautogui failsafe: move mouse to (0,0)  \u2022  Educational project",
+            text="ESC exits any simulation  \u2022  pyautogui failsafe: move mouse to (0,0)  \u2022  Educational project",
             font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
         ).pack(pady=5)
 
@@ -1466,29 +2200,36 @@ class Launcher:
         "windows_update":(WindowsUpdateSimulation, True),
         "disk_defrag":   (DiskDefragSimulation,    True),
         "stay_active":   (StayActiveSimulation,    True),
+        "code_build":    (CodeBuildSimulation,     True),
+        "ai_training":   (AITrainingSimulation,    True),
+        "matrix_rain":   (MatrixRainSimulation,    True),
         "docs":          (DocumentationViewer,     False),
     }
 
+    def _on_intensity_change(self, *_):
+        """Apply the chosen keep-alive intensity profile immediately."""
+        keep_alive.set_profile(self.intensity_var.get())
+
+    def _launch_random(self):
+        """Pick and launch a random simulation (excluding docs)."""
+        choices = [sid for sid in self.SIM_REGISTRY if sid != "docs"]
+        self._launch(random.choice(choices))
+
     def _launch(self, sim_id):
         """Launch the selected simulation."""
-        # Validate duration input
-        try:
-            dur = self.duration_var.get()
-            if dur < 1 or dur > 8:
-                raise ValueError
-        except (tk.TclError, ValueError):
-            self.duration_var.set(2)
-
         entry = self.SIM_REGISTRY.get(sim_id)
         if entry is None:
             return
+
+        # Apply current keep-alive intensity before the engine starts
+        keep_alive.set_profile(self.intensity_var.get())
 
         self.root.withdraw()
 
         sim_class, takes_duration = entry
         if takes_duration:
             self.active_sim = sim_class(
-                self.root, self._show_launcher, self.duration_var.get()
+                self.root, self._show_launcher, self._duration_hours()
             )
         else:
             self.active_sim = sim_class(self.root, self._show_launcher)

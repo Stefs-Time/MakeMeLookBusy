@@ -28,8 +28,11 @@ for educational purposes:
 | **Cyber Threat Scanner** | Threaded console output, weighted random status generation, progress bar styling with `ttk.Style`, timestamped log formatting, pause/resume with elapsed-time tracking, and dashboard layout design. |
 | **Windows Update Screen** | Canvas-based animation (spinning dots), erratic progress simulation, fullscreen window management, and auto-exit on duration expiry. |
 | **Disk Optimization** | Grid-based block map visualization, multi-drive state management, per-drive progress tracking, randomized color mapping, live canvas updates, and completion state finalization. |
-| **Stay Active (Keep-Alive)** | Background daemon threads, thread-safe `threading.Event` signaling, `pyautogui` input injection (mouse micro-movements and key presses), and cross-platform idle-prevention techniques. |
-| **Glassmorphic Launcher** | Modern UI design patterns in Tkinter, flicker-free hover effects, input validation, custom color palettes, card-based layouts, simulation registry pattern, and event binding. |
+| **Stay Active (Keep-Alive)** | Background daemon threads, thread-safe `threading.Event` signaling, `pyautogui` input injection (mouse micro-movements and key presses), selectable intensity profiles, randomized timing jitter, and cross-platform idle-prevention techniques. |
+| **Code Compiler** | Threaded simulation of a multi-stage build pipeline, tagged console rendering, interruptible worker loops, and progress synchronized to elapsed runtime. |
+| **AI Model Training** | Canvas line-chart plotting, animated bar-chart rendering with trigonometric easing, simulated loss-decay/accuracy-climb curves, and live metric dashboards. |
+| **Matrix Rain** | Canvas text-item animation, per-column particle state, brightness-gradient trail rendering, frame-rate-paced redraw loops, and multi-script glyph sets. |
+| **Glassmorphic Launcher** | Modern UI design patterns in Tkinter, flicker-free hover effects, input validation, custom color palettes, card-based layouts, simulation registry pattern, option menus, and event binding. |
 
 ---
 
