@@ -96,7 +96,7 @@ SIMULATIONS = [
         "icon": "\u2615",
         "title": "Stay Active",
         "subtitle": "Invisible Keep-Alive",
-        "desc": "Silent keep-alive with micro mouse movements and shift key presses. Countdown timer, progress bar, and minimize button. Set duration (1-8h) and walk away.",
+        "desc": "Silent keep-alive with micro mouse movements and shift key presses. Countdown timer, progress bar, and minimize button. Set duration in hours or minutes and walk away.",
         "color": "#ffd32a",
     },
     {
@@ -197,6 +197,10 @@ class KeepAliveEngine:
         with self._lock:
             if self._running.is_set():
                 return
+            # Reset per-session counters so each simulation starts from zero.
+            self.mouse_moves = 0
+            self.key_presses = 0
+            self.last_action = "idle"
             self._running.set()
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
@@ -662,8 +666,10 @@ class SecurityScanSimulation:
             for mp in range(0, 101, random.randint(5, 15)):
                 if not self.scanning:
                     return
-                while self.paused:
+                while self.paused and self.scanning:
                     time.sleep(0.1)
+                if not self.scanning:
+                    return
                 self.win.after(0, lambda v=overall, m=mp: self._update_bars(v, m))
                 time.sleep(random.uniform(0.04, 0.08))
 
@@ -1546,12 +1552,15 @@ class AITrainingSimulation:
             if len(self.loss_history) > 120:
                 self.loss_history.pop(0)
 
-            def update():
+            # Snapshot values as default args so the UI-thread callback shows the
+            # state from this iteration, not whatever the worker has moved on to.
+            def update(epoch=epoch, loss=self.loss, acc=self.acc,
+                       lr=lr, gpu=gpu, frac=frac):
                 if not self.running:
                     return
                 self.metric_labels["epoch"].config(text=f"{epoch}/{self.total_epochs}")
-                self.metric_labels["loss"].config(text=f"{self.loss:.4f}")
-                self.metric_labels["acc"].config(text=f"{self.acc*100:.2f}%")
+                self.metric_labels["loss"].config(text=f"{loss:.4f}")
+                self.metric_labels["acc"].config(text=f"{acc*100:.2f}%")
                 self.metric_labels["lr"].config(text=f"{lr:.1e}")
                 self.metric_labels["gpu"].config(text=f"{gpu}%")
                 self.progress_bar.configure(value=frac * 100)
@@ -1563,8 +1572,8 @@ class AITrainingSimulation:
 
             if random.random() < 0.5:
                 step = random.randint(100, 9000)
-                self.win.after(0, lambda e=epoch, s=step: self._log(
-                    f"epoch {e:>3}  step {s:>5}  loss {self.loss:.4f}  acc {self.acc*100:.2f}%"))
+                self.win.after(0, lambda e=epoch, ls=self.loss, ac=self.acc, s=step:
+                    self._log(f"epoch {e:>3}  step {s:>5}  loss {ls:.4f}  acc {ac*100:.2f}%"))
             if random.random() < 0.08:
                 self.win.after(0, lambda: self._log(
                     "  checkpoint saved → ckpt/epoch_latest.pt", "green"))
@@ -1987,13 +1996,16 @@ class Launcher:
         _init_styles()
         self._build_ui()
 
-    @staticmethod
-    def _validate_duration(value):
-        """Allow only empty string (mid-edit) or integers 1-480."""
+    def _max_duration(self):
+        """Maximum duration value allowed for the currently selected unit."""
+        return 480 if self.unit_var.get() == "minutes" else 8
+
+    def _validate_duration(self, value):
+        """Allow empty (mid-edit) or an integer within the current unit's range."""
         if value == "":
             return True
         try:
-            return 1 <= int(value) <= 480
+            return 1 <= int(value) <= self._max_duration()
         except ValueError:
             return False
 
@@ -2056,8 +2068,8 @@ class Launcher:
         ).pack(side="left", padx=(0, 8))
 
         vcmd = (self.root.register(self._validate_duration), "%P")
-        dur_spin = tk.Spinbox(
-            dur_frame, from_=1, to=480, width=4,
+        self.dur_spin = tk.Spinbox(
+            dur_frame, from_=1, to=self._max_duration(), width=4,
             textvariable=self.duration_var,
             validate="key", validatecommand=vcmd,
             font=("Consolas", 11), justify="center",
@@ -2066,10 +2078,11 @@ class Launcher:
             highlightcolor=ACCENT, relief="flat", bd=2,
             buttonbackground=BG_CARD
         )
-        dur_spin.pack(side="left")
+        self.dur_spin.pack(side="left")
 
         # Unit toggle: hours or minutes
-        unit_menu = tk.OptionMenu(dur_frame, self.unit_var, "hours", "minutes")
+        unit_menu = tk.OptionMenu(dur_frame, self.unit_var, "hours", "minutes",
+                                  command=self._on_unit_change)
         unit_menu.config(font=("Segoe UI", 9), bg=BG_INPUT, fg=TEXT_PRIMARY,
                          activebackground=BG_CARD_HOVER, activeforeground=ACCENT,
                          relief="flat", bd=0, highlightthickness=1,
@@ -2242,6 +2255,16 @@ class Launcher:
         return (f"{name}: {prof['desc']}  "
                 f"(mouse ~{prof['mouse']}s / key ~{prof['key']}s)")
 
+    def _on_unit_change(self, *_):
+        """Re-range the duration spinbox to match the unit and clamp the value."""
+        max_val = self._max_duration()
+        try:
+            self.dur_spin.config(to=max_val)
+            if self.duration_var.get() > max_val:
+                self.duration_var.set(max_val)
+        except tk.TclError:
+            self.duration_var.set(2)
+
     def _on_intensity_change(self, *_):
         """Apply the chosen keep-alive intensity profile immediately."""
         keep_alive.set_profile(self.intensity_var.get())
@@ -2265,12 +2288,18 @@ class Launcher:
         self.root.withdraw()
 
         sim_class, takes_duration = entry
-        if takes_duration:
-            self.active_sim = sim_class(
-                self.root, self._show_launcher, self._duration_hours()
-            )
-        else:
-            self.active_sim = sim_class(self.root, self._show_launcher)
+        try:
+            if takes_duration:
+                self.active_sim = sim_class(
+                    self.root, self._show_launcher, self._duration_hours()
+                )
+            else:
+                self.active_sim = sim_class(self.root, self._show_launcher)
+        except Exception:
+            # If a simulation fails to start, restore the launcher instead of
+            # leaving the app withdrawn and seemingly frozen.
+            self.active_sim = None
+            self._show_launcher()
 
     def _show_launcher(self):
         """Return to the launcher after a simulation exits."""
