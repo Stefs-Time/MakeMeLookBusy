@@ -278,6 +278,20 @@ class KeepAliveEngine:
 keep_alive = KeepAliveEngine()
 
 
+def _post(win, func, delay=0):
+    """Schedule ``func`` on the Tk main loop, tolerating a torn-down window.
+
+    Background worker threads dispatch UI updates via ``win.after``. If the
+    window is destroyed mid-flight (ESC, Stop, or auto-exit), ``after`` raises
+    TclError (window gone) or RuntimeError (no main loop). Both are benign
+    during shutdown, so we swallow them instead of crashing the worker thread.
+    """
+    try:
+        return win.after(delay, func)
+    except (tk.TclError, RuntimeError):
+        return None
+
+
 def _init_styles():
     """Configure all ttk styles once. Call after root Tk is created."""
     style = ttk.Style()
@@ -648,11 +662,11 @@ class SecurityScanSimulation:
             overall = min(99, (elapsed / self.duration) * 100)
 
             try:
-                self.win.after(0, lambda v=overall: self._update_bars(v, 0))
-                self.win.after(0, lambda v=overall: self.status_label.config(
+                _post(self.win, lambda v=overall: self._update_bars(v, 0))
+                _post(self.win, lambda v=overall: self.status_label.config(
                     text=f"SCANNING \u2014 Phase {random.randint(1, 8)}"
                 ))
-                self.win.after(0, lambda v=overall: self.percent_label.config(
+                _post(self.win, lambda v=overall: self.percent_label.config(
                     text=f"{int(v)}%"
                 ))
             except Exception:
@@ -660,7 +674,7 @@ class SecurityScanSimulation:
 
             # Phase header
             phase = random.choice(self.SCAN_PHASES)
-            self.win.after(0, lambda p=phase: self._log(f"\n--- {p} ---", "cyan"))
+            _post(self.win, lambda p=phase: self._log(f"\n--- {p} ---", "cyan"))
 
             # Module progress simulation
             for mp in range(0, 101, random.randint(5, 15)):
@@ -670,7 +684,7 @@ class SecurityScanSimulation:
                     time.sleep(0.1)
                 if not self.scanning:
                     return
-                self.win.after(0, lambda v=overall, m=mp: self._update_bars(v, m))
+                _post(self.win, lambda v=overall, m=mp: self._update_bars(v, m))
                 time.sleep(random.uniform(0.04, 0.08))
 
             # Scan items with flags
@@ -683,33 +697,33 @@ class SecurityScanSimulation:
                 )[0]
                 tag = {ACCENT: "green", YELLOW_ACCENT: "yellow",
                        ORANGE_ACCENT: "orange", RED_ACCENT: "red"}[color]
-                self.win.after(0, lambda i=item, s=status, t=tag:
+                _post(self.win, lambda i=item, s=status, t=tag:
                     self._log(f"  {i:<42} [{s}]", t))
                 time.sleep(random.uniform(0.08, 0.25))
 
             # Random events
             if random.random() < 0.15:
-                self.win.after(0, lambda: self._log(
+                _post(self.win, lambda: self._log(
                     "  Subsystem latency spike \u2014 auto-correcting", "yellow"))
             if random.random() < 0.08:
-                self.win.after(0, lambda: self._log(
+                _post(self.win, lambda: self._log(
                     "  Packet capture: anomalous traffic pattern logged", "orange"))
             if random.random() < 0.05:
                 conf = round(random.uniform(0.4, 0.99), 2)
                 score = int(conf * random.randint(80, 200))
-                self.win.after(0, lambda c=conf, s=score: self._log(
+                _post(self.win, lambda c=conf, s=score: self._log(
                     f"  [AI] ThreatScoreNet inference \u2014 conf: {c} \u2014 score: {s}", "blue"))
 
             time.sleep(random.uniform(0.3, 1.5))
 
         if self.scanning:
-            self.win.after(0, lambda: self._log(
+            _post(self.win, lambda: self._log(
                 "\n=== SYSTEM SCAN COMPLETE \u2014 REPORT GENERATED ===", "green"))
-            self.win.after(0, lambda: self._update_bars(100, 100))
-            self.win.after(0, lambda: self.status_label.config(text="COMPLETE"))
-            self.win.after(0, lambda: self.percent_label.config(text="100%"))
+            _post(self.win, lambda: self._update_bars(100, 100))
+            _post(self.win, lambda: self.status_label.config(text="COMPLETE"))
+            _post(self.win, lambda: self.percent_label.config(text="100%"))
             # Auto-exit after brief delay to show completion
-            self.win.after(3000, self._exit)
+            _post(self.win, self._exit, 3000)
 
     def _update_bars(self, overall, module):
         try:
@@ -993,24 +1007,24 @@ class DiskDefragSimulation:
             drive_pct = min(99, max(0, int((pct - drive_idx * drive_share) / drive_share * 100))) if drive_idx < num_drives else 100
 
             try:
-                self.win.after(0, lambda p=pct: self.progress_bar.configure(value=p))
-                self.win.after(0, lambda p=pct: self.progress_label.config(text=f"{p}%"))
-                self.win.after(0, lambda a=random.choice(actions): self.action_label.config(text=a))
+                _post(self.win, lambda p=pct: self.progress_bar.configure(value=p))
+                _post(self.win, lambda p=pct: self.progress_label.config(text=f"{p}%"))
+                _post(self.win, lambda a=random.choice(actions): self.action_label.config(text=a))
 
                 for i, lbl in enumerate(self.drive_labels):
                     if i < drive_idx:
-                        self.win.after(0, lambda l=lbl: l.config(text="OK (0% fragmented)", fg=ACCENT))
+                        _post(self.win, lambda w=lbl: w.config(text="OK (0% fragmented)", fg=ACCENT))
                     elif i == drive_idx:
-                        self.win.after(0, lambda l=lbl, dp=drive_pct: l.config(
+                        _post(self.win, lambda w=lbl, dp=drive_pct: w.config(
                             text=f"Optimizing ({dp}%)", fg=ORANGE_ACCENT))
                     else:
-                        self.win.after(0, lambda l=lbl: l.config(text="Queued", fg=YELLOW_ACCENT))
+                        _post(self.win, lambda w=lbl: w.config(text="Queued", fg=YELLOW_ACCENT))
             except Exception:
                 return
 
             # Periodically redraw blocks
             if random.random() < 0.15:
-                self.win.after(0, self._draw_blocks)
+                _post(self.win, self._draw_blocks)
 
             # Advance to next drive at evenly-spaced thresholds
             if drive_idx < num_drives - 1 and pct >= drive_share * (drive_idx + 1):
@@ -1021,15 +1035,15 @@ class DiskDefragSimulation:
         # Show completion state
         if self.running:
             try:
-                self.win.after(0, lambda: self.progress_bar.configure(value=100))
-                self.win.after(0, lambda: self.progress_label.config(text="100%"))
-                self.win.after(0, lambda: self.action_label.config(
+                _post(self.win, lambda: self.progress_bar.configure(value=100))
+                _post(self.win, lambda: self.progress_label.config(text="100%"))
+                _post(self.win, lambda: self.action_label.config(
                     text="All drives have been optimized.", fg=ACCENT))
                 for lbl in self.drive_labels:
-                    self.win.after(0, lambda l=lbl: l.config(
+                    _post(self.win, lambda w=lbl: w.config(
                         text="OK (0% fragmented)", fg=ACCENT))
                 # Auto-exit after brief delay to show completion
-                self.win.after(3000, self._exit)
+                _post(self.win, self._exit, 3000)
             except Exception:
                 pass
 
@@ -1275,13 +1289,13 @@ class CodeBuildSimulation:
         if not self.running:
             return
         try:
-            self.win.after(0, lambda: self._log(msg, tag))
+            _post(self.win, lambda: self._log(msg, tag))
         except Exception:
             pass
 
     def _set_progress(self, pct):
         try:
-            self.win.after(0, lambda: self.progress_bar.configure(value=pct))
+            _post(self.win, lambda: self.progress_bar.configure(value=pct))
         except Exception:
             pass
 
@@ -1293,7 +1307,7 @@ class CodeBuildSimulation:
             self._emit("", "muted")
 
             # Stage 1: install dependencies
-            self.win.after(0, lambda: self._set_stage("installing dependencies"))
+            _post(self.win, lambda: self._set_stage("installing dependencies"))
             self._emit("> resolving dependency tree…", "muted")
             for pkg in random.sample(self.PACKAGES, random.randint(6, 11)):
                 if not self.running:
@@ -1304,7 +1318,7 @@ class CodeBuildSimulation:
             self._emit("  added 312 packages in 4.7s", "muted")
 
             # Stage 2: compile modules
-            self.win.after(0, lambda: self._set_stage("compiling"))
+            _post(self.win, lambda: self._set_stage("compiling"))
             self._emit("\n> tsc --build", "cyan")
             for mod in random.sample(self.MODULES, random.randint(7, 12)):
                 if not self.running:
@@ -1315,7 +1329,7 @@ class CodeBuildSimulation:
                 self._emit("  ⚠ deprecation: 'componentWillMount' is deprecated", "yellow")
 
             # Stage 3: bundle
-            self.win.after(0, lambda: self._set_stage("bundling"))
+            _post(self.win, lambda: self._set_stage("bundling"))
             self._emit("\n> vite build", "cyan")
             for chunk in ["vendor", "main", "runtime", "polyfills", "styles"]:
                 if not self.running:
@@ -1326,7 +1340,7 @@ class CodeBuildSimulation:
             self._emit("  built in 8.42s", "muted")
 
             # Stage 4: tests
-            self.win.after(0, lambda: self._set_stage("running tests"))
+            _post(self.win, lambda: self._set_stage("running tests"))
             self._emit("\n> jest --coverage", "cyan")
             passed = 0
             for spec in random.sample(self.TESTS, random.randint(5, 9)):
@@ -1348,9 +1362,9 @@ class CodeBuildSimulation:
 
         if self.running:
             self._set_progress(100)
-            self.win.after(0, lambda: self._set_stage("done"))
+            _post(self.win, lambda: self._set_stage("done"))
             self._emit("\n✅ Pipeline finished cleanly.", "green")
-            self.win.after(3000, self._exit)
+            _post(self.win, self._exit, 3000)
 
     def _sleep(self, secs):
         """Interruptible sleep that bails out when stopped."""
@@ -1530,7 +1544,7 @@ class AITrainingSimulation:
             pass
 
     def _train_loop(self):
-        self.win.after(0, lambda: self._log(
+        _post(self.win, lambda: self._log(
             f"Initializing {self.model} on 8× A100  —  {self.total_epochs} epochs", "magenta"))
         epoch = 0
         while self.running and time.time() - self.start_time < self.duration:
@@ -1566,25 +1580,25 @@ class AITrainingSimulation:
                 self.progress_bar.configure(value=frac * 100)
                 self._draw_curve()
             try:
-                self.win.after(0, update)
+                _post(self.win, update)
             except Exception:
                 return
 
             if random.random() < 0.5:
                 step = random.randint(100, 9000)
-                self.win.after(0, lambda e=epoch, ls=self.loss, ac=self.acc, s=step:
+                _post(self.win, lambda e=epoch, ls=self.loss, ac=self.acc, s=step:
                     self._log(f"epoch {e:>3}  step {s:>5}  loss {ls:.4f}  acc {ac*100:.2f}%"))
             if random.random() < 0.08:
-                self.win.after(0, lambda: self._log(
+                _post(self.win, lambda: self._log(
                     "  checkpoint saved → ckpt/epoch_latest.pt", "green"))
 
             time.sleep(random.uniform(0.4, 1.1))
 
         if self.running:
-            self.win.after(0, lambda: self._log(
+            _post(self.win, lambda: self._log(
                 "✅ Training complete — best model exported.", "green"))
-            self.win.after(0, lambda: self.progress_bar.configure(value=100))
-            self.win.after(3000, self._exit)
+            _post(self.win, lambda: self.progress_bar.configure(value=100))
+            _post(self.win, self._exit, 3000)
 
     def _exit(self):
         if not self.running:
@@ -2239,7 +2253,7 @@ class Launcher:
     SIM_REGISTRY = {
         "bsod":          (BSODSimulation,          True),
         "security_scan": (SecurityScanSimulation,  True),
-        "windows_update":(WindowsUpdateSimulation, True),
+        "windows_update": (WindowsUpdateSimulation, True),
         "disk_defrag":   (DiskDefragSimulation,    True),
         "stay_active":   (StayActiveSimulation,    True),
         "code_build":    (CodeBuildSimulation,     True),
