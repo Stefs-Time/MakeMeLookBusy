@@ -72,6 +72,18 @@ Timing is governed by a selectable **intensity profile**:
 
 This prevents the OS and communication apps (Teams, Slack, etc.) from marking you as idle/away. The engine gracefully degrades if `pyautogui` is not installed.
 
+## Development
+
+Run the headless unit tests (cover the keep-alive engine and the
+launcher's card/registry consistency — no display required):
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+CI (GitHub Actions) byte-compiles the app, runs `pyflakes`, and executes the
+test suite across Python 3.8 / 3.11 / 3.12.
+
 ## Technical Highlights
 
 - **Single-file architecture** -- entire app (9 modes) in one Python file

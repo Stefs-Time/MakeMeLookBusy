@@ -29,3 +29,27 @@ jobs:
 
       - name: Static analysis (pyflakes)
         run: python -m pyflakes MakeMeLookBusy.py
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The module does `import tkinter` at top level. setup-python's CPython
+      # ships the tkinter package but needs the system Tcl/Tk runtime libraries,
+      # which python3-tk pulls in. No display is required to *import* tkinter.
+      - name: Install Tk runtime
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
