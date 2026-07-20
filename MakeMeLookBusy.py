@@ -46,6 +46,7 @@ ACCENT_GLOW = "#00ffb3"
 TEXT_PRIMARY = "#e8edf5"
 TEXT_SECONDARY = "#7a8ba8"
 TEXT_MUTED = "#4a5568"
+TEXT_DESC = "#8593ac"  # card body copy — readable but recedes behind titles
 BORDER = "#1e2d4a"
 BORDER_HOVER = "#2a4070"
 RED_ACCENT = "#ff4757"
@@ -1071,7 +1072,7 @@ class StayActiveSimulation:
 
         self.win = tk.Toplevel(parent_root)
         self.win.title("Stay Active")
-        self.win.geometry("440x280")
+        self.win.geometry("440x340")
         self.win.configure(bg=BG_DARK)
         self.win.resizable(False, False)
         self.win.protocol("WM_DELETE_WINDOW", self._exit)
@@ -1990,17 +1991,8 @@ class Launcher:
         self.root = tk.Tk()
         self.root.title(f"{APP_TITLE} v{APP_VERSION}")
         self.W, self.H = 960, 880
-        self.root.geometry(f"{self.W}x{self.H}")
         self.root.configure(bg=BG_DARK)
         self.root.resizable(False, False)
-
-        # Center on screen
-        self.root.update_idletasks()
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        x = (sw - self.W) // 2
-        y = max(0, (sh - self.H) // 2)
-        self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
 
         self.active_sim = None
         self.duration_var = tk.IntVar(value=2)
@@ -2009,6 +2001,20 @@ class Launcher:
 
         _init_styles()
         self._build_ui()
+
+        # Size the window to fit its content, then center. The card grid's
+        # natural height varies with the longest description (and with whether
+        # the pyautogui warning is shown), so measuring after build keeps card
+        # text from being clipped instead of hard-coding a height that isn't
+        # tall enough. Clamp to the screen so it always fits on smaller displays.
+        self.root.update_idletasks()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        self.W = max(self.W, self.root.winfo_reqwidth())
+        self.H = min(self.root.winfo_reqheight(), sh - 40)
+        x = (sw - self.W) // 2
+        y = max(0, (sh - self.H) // 2)
+        self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
 
     def _max_duration(self):
         """Maximum duration value allowed for the currently selected unit."""
@@ -2203,7 +2209,7 @@ class Launcher:
         # Description (shown on hover via tooltip-like area)
         desc_label = tk.Label(
             inner, text=sim["desc"],
-            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_CARD,
+            font=("Segoe UI", 8), fg=TEXT_DESC, bg=BG_CARD,
             anchor="w", justify="left", wraplength=240
         )
         desc_label.pack(anchor="w", pady=(8, 0))
