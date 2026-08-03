@@ -1,4 +1,4 @@
-"""Unit tests for MakeMeLookBusy.
+"""Unit tests for WorkFacade.
 
 These tests exercise the headless, non-GUI logic only. Importing the module
 does not create a Tk root (that happens inside ``Launcher.__init__``, guarded
@@ -10,7 +10,7 @@ which is exactly what we assert here.
 import time
 import unittest
 
-import MakeMeLookBusy as mmlb
+import WorkFacade as mmlb
 
 
 class KeepAliveProfileTests(unittest.TestCase):
