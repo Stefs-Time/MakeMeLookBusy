@@ -1,4 +1,4 @@
-# MakeMeLookBusy
+# WorkFacade
 
 Desktop activity simulator with a glassmorphic launcher menu. Built with Python and Tkinter for educational purposes -- demonstrates fullscreen overlays, threaded UI, canvas animation, and cross-platform idle-prevention techniques.
 
@@ -42,7 +42,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python MakeMeLookBusy.py
+python WorkFacade.py
 ```
 
 The glassmorphic launcher will open. Pick a simulation mode, set a duration (in hours or minutes), choose a keep-alive intensity, or hit **🎲 Surprise Me** for a random mode. All timed modes auto-return to the launcher on completion.

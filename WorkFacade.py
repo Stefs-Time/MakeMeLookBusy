@@ -1,6 +1,6 @@
 """
-MakeMeLookBusy - The Ultimate "I'm Working" Simulator
-=====================================================
+WorkFacade - The Ultimate "I'm Working" Simulator
+==================================================
 A single unified app with a glassmorphic launcher menu.
 Choose a simulation mode and it runs fullscreen, keeping
 you "active" on all platforms while looking completely legit.
@@ -32,7 +32,7 @@ except ImportError:
 # CONSTANTS & THEME
 # ═══════════════════════════════════════════════════════════════
 
-APP_TITLE = "MakeMeLookBusy"
+APP_TITLE = "WorkFacade"
 APP_VERSION = "3.0"
 
 # Glassmorphic color palette
@@ -1721,11 +1721,11 @@ class MatrixRainSimulation:
 # ═══════════════════════════════════════════════════════════════
 
 DOCS_TEXT = """
-\u2550\u2550\u2550  MakeMeLookBusy \u2014 Documentation  \u2550\u2550\u2550
+\u2550\u2550\u2550  WorkFacade \u2014 Documentation  \u2550\u2550\u2550
 
 \u2501\u2501\u2501  WHAT IS THIS?  \u2501\u2501\u2501
 
-MakeMeLookBusy is an educational demonstration project that shows how
+WorkFacade is an educational demonstration project that shows how
 desktop activity simulation works across platforms (Windows, macOS,
 Linux). It combines multiple "excuse screens" into a single launcher
 with a clean glassmorphic UI.
@@ -1744,7 +1744,7 @@ Operating systems (and apps like Teams, Slack, etc.) detect idle
 status by monitoring input events. If no mouse movement or keystrokes
 happen for a threshold period (usually 3-5 minutes), you go "Away".
 
-MakeMeLookBusy prevents this with a background KeepAliveEngine that:
+WorkFacade prevents this with a background KeepAliveEngine that:
   \u2022 Moves the mouse by 1 pixel and back (and the occasional 1-notch scroll)
   \u2022 Sends a harmless key press (Shift / Ctrl / F13-F15, rotated)
   \u2022 Adds \u00b125% random jitter to every interval so it never looks robotic
@@ -1913,7 +1913,7 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
 \u2501\u2501\u2501  USAGE NOTES  \u2501\u2501\u2501
 
   \u2022 Install dependency:  pip install pyautogui
-  \u2022 Run:                 python MakeMeLookBusy.py
+  \u2022 Run:                 python WorkFacade.py
   \u2022 ESC exits ANY simulation (fullscreen or windowed)
   \u2022 Close window / Stop button also exits windowed modes
   \u2022 All timed modes auto-exit when duration expires
@@ -1938,7 +1938,7 @@ class DocumentationViewer:
         self.on_exit = on_exit
 
         self.win = tk.Toplevel(parent_root)
-        self.win.title("MakeMeLookBusy \u2014 Documentation")
+        self.win.title("WorkFacade \u2014 Documentation")
         self.win.geometry("800x650")
         self.win.configure(bg=BG_DARK)
         self.win.protocol("WM_DELETE_WINDOW", self._exit)

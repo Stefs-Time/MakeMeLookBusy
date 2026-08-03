@@ -2,7 +2,7 @@
 
 ## Purpose of This Software
 
-**MakeMeLookBusy** is an **educational and demonstration project** created to
+**WorkFacade** is an **educational and demonstration project** created to
 illustrate desktop UI simulation techniques, idle-prevention mechanisms, and
 fullscreen overlay rendering across platforms (Windows, macOS, Linux) using
 Python and Tkinter.
@@ -19,7 +19,7 @@ This software is **not** designed, intended, or marketed to:
 
 ## What This Software Demonstrates
 
-MakeMeLookBusy showcases several legitimate programming techniques and concepts
+WorkFacade showcases several legitimate programming techniques and concepts
 for educational purposes:
 
 | Feature | Technical Concept Demonstrated |
