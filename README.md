@@ -25,13 +25,15 @@ Desktop activity simulator with a glassmorphic launcher menu. Built with Python 
 - **Keep-alive intensity** — choose **Stealth**, **Normal**, or **Aggressive** timing profiles.
 - **🎲 Surprise Me** — launch a random simulation.
 - **Universal ESC** — press ESC to exit *any* simulation instantly.
+- **Scrolling card grid** — on short screens the grid scrolls, so every mode stays reachable.
 - **BI Trainer controls** — ← / → step through lessons, SPACE pauses the auto-advance.
 
 ## Requirements
 
 - Python 3.8+
 - Tkinter (included with most Python installations)
-- `pyautogui` (optional -- keep-alive features are disabled without it)
+- `pyautogui` (optional -- keep-alive features are disabled without it, including
+  on a headless Linux box with no X display)
 
 ## Installation
 
@@ -62,6 +64,7 @@ All simulation modes share a `KeepAliveEngine` that runs in a background daemon 
 - Moves the mouse by 1 pixel and back (plus the occasional 1-notch scroll)
 - Presses a harmless key (Shift / Ctrl / F13–F15, rotated)
 - Applies ±25% random jitter to every interval so the activity never looks robotic
+- Drops keys the OS keymap cannot produce (F13–F15 are unmapped on most Linux layouts)
 - Tracks live stats (mouse moves / key presses)
 
 Timing is governed by a selectable **intensity profile**:

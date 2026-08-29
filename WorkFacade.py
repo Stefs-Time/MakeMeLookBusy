@@ -20,12 +20,18 @@ import random
 import string
 import math
 import re
+import traceback
 from datetime import datetime, timedelta
 
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
-except ImportError:
+except Exception:
+    # Deliberately broader than ImportError: pyautogui imports mouseinfo, which
+    # reads os.environ['DISPLAY'] at import time and raises KeyError on a
+    # headless Linux box (SSH session, CI runner, Wayland without XWayland).
+    # The app is documented to run without keep-alive rather than fail to start,
+    # so any import-time failure degrades instead of killing the launcher.
     pyautogui = None
 
 
@@ -170,6 +176,28 @@ DEFAULT_PROFILE = "Normal"
 HARMLESS_KEYS = ["shift", "ctrl", "f13", "f14", "f15"]
 
 
+def usable_keys():
+    """Filter HARMLESS_KEYS down to keys this machine can actually press.
+
+    ``pyautogui.KEYBOARD_KEYS`` advertises F13-F15 on every platform, but X11
+    resolves them to keycode 0 on the standard layouts that stop at F12 — there
+    is no such physical key to press. Sending an unmapped keycode raises an X
+    protocol error, and on some Xlib versions leaves the connection wedged so
+    the *next* injection blocks instead of returning. Either way key presses
+    silently stop happening, which is the one thing the engine exists to do.
+    Windows and macOS expose no such mapping to check, so there we keep the
+    full list and rely on the caller's exception handling.
+    """
+    if pyautogui is None:
+        return list(HARMLESS_KEYS)
+    x11 = getattr(pyautogui, "_pyautogui_x11", None)
+    mapping = getattr(x11, "keyboardMapping", None)
+    if not mapping:
+        return list(HARMLESS_KEYS)
+    usable = [k for k in HARMLESS_KEYS if mapping.get(k)]
+    return usable or ["shift"]
+
+
 class KeepAliveEngine:
     """Background thread that prevents idle/away status.
 
@@ -186,6 +214,8 @@ class KeepAliveEngine:
         self.mouse_moves = 0
         self.key_presses = 0
         self.last_action = "idle"
+        # Resolved once: the keymap does not change while the app runs.
+        self.keys = usable_keys()
         self.set_profile(profile)
 
     def set_profile(self, name):
@@ -256,11 +286,11 @@ class KeepAliveEngine:
             pass
 
     def _do_key(self):
-        """Press a randomly chosen harmless key."""
+        """Press a randomly chosen harmless key this platform supports."""
         if not pyautogui:
             return
         try:
-            pyautogui.press(random.choice(HARMLESS_KEYS))
+            pyautogui.press(random.choice(self.keys))
             self.key_presses += 1
             self.last_action = "key"
         except Exception:
@@ -295,11 +325,32 @@ def _post(win, func, delay=0):
     window is destroyed mid-flight (ESC, Stop, or auto-exit), ``after`` raises
     TclError (window gone) or RuntimeError (no main loop). Both are benign
     during shutdown, so we swallow them instead of crashing the worker thread.
+
+    The callback itself is guarded for the same reason: a worker can win the
+    race and queue an update microseconds before ``destroy()`` runs, and the
+    callback then fires against dead widgets. Tk reports that as a traceback on
+    the console rather than crashing, but it is noise from a shutdown that
+    otherwise went fine.
     """
+    def guarded():
+        try:
+            func()
+        except tk.TclError:
+            pass
+
     try:
-        return win.after(delay, func)
+        return win.after(delay, guarded)
     except (tk.TclError, RuntimeError):
         return None
+
+
+def _format_duration(seconds):
+    """Human runtime label: sub-hour durations must not read as '0h'."""
+    minutes = int(round(seconds / 60.0))
+    if minutes < 60:
+        return f"{max(1, minutes)}m"
+    hours, rem = divmod(minutes, 60)
+    return f"{hours}h" if rem == 0 else f"{hours}h{rem:02d}m"
 
 
 def _init_styles():
@@ -644,7 +695,8 @@ class SecurityScanSimulation:
         self.start_time = time.time()
         keep_alive.start()
         self._log("=== SCAN INITIATED ===", "green")
-        self._log(f"Runtime: {self.duration // 3600}h | Engine: v9.4 | Mode: Full Behavioral", "muted")
+        self._log(f"Runtime: {_format_duration(self.duration)} | Engine: v9.4 | "
+                  f"Mode: Full Behavioral", "muted")
         threading.Thread(target=self._scan_loop, daemon=True).start()
         self._update_elapsed()
 
@@ -1182,8 +1234,11 @@ class StayActiveSimulation:
         self.win.after(1000, self._tick)
 
     def _exit(self):
-        if not self.running and self.win.winfo_exists():
-            # Natural completion path — just destroy and return
+        if not self.win.winfo_exists():
+            return                      # already torn down — nothing to do
+        if not self.running:
+            # Natural completion path: _tick already stopped the keep-alive
+            # engine, so just close and hand control back.
             self.win.destroy()
             self.on_exit()
             return
@@ -3271,6 +3326,8 @@ happen for a threshold period (usually 3-5 minutes), you go "Away".
 WorkFacade prevents this with a background KeepAliveEngine that:
   \u2022 Moves the mouse by 1 pixel and back (and the occasional 1-notch scroll)
   \u2022 Sends a harmless key press (Shift / Ctrl / F13-F15, rotated)
+    Keys the OS keymap cannot produce are dropped at startup — on Linux,
+    F13-F15 are usually unmapped, and pressing them stops injection dead
   \u2022 Adds \u00b125% random jitter to every interval so it never looks robotic
   \u2022 Runs on a daemon thread so it doesn't block the UI
   \u2022 Uses thread-safe signaling (threading.Event) for start/stop
@@ -3428,9 +3485,10 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
   \u2022 Flicker-free hover effects on simulation cards
   \u2022 Duration input in HOURS or MINUTES (validated)
   \u2022 Keep-alive intensity selector (Stealth / Normal / Aggressive)
-  \u2022 "\ud83c\udfb2 Surprise Me" button launches a random simulation
+  \u2022 "\U0001f3b2 Surprise Me" button launches a random simulation
   \u2022 Universal ESC panic-exit on every simulation window
   \u2022 Simulation registry pattern for clean extensibility
+  \u2022 Card grid scrolls when the screen is too short for every row
   \u2022 Auto-center on screen, non-resizable
 
 
@@ -3517,6 +3575,8 @@ class DocumentationViewer:
         self.text.config(state="disabled")
 
     def _exit(self):
+        if not self.win.winfo_exists():
+            return                      # already closed (ESC then Close, etc.)
         self.win.destroy()
         self.on_exit()
 
@@ -3686,13 +3746,39 @@ class Launcher:
         )
         self.intensity_hint.pack(pady=(0, 12))
 
+        # ── Footer ──
+        # Packed before the card grid, and to the bottom, so pack gives it its
+        # strip first. Otherwise, on a screen too short for the whole grid, the
+        # footer is the piece that falls off the edge.
+        footer = tk.Frame(self.root, bg=BG_DARK, height=30)
+        footer.pack(side="bottom", fill="x")
+        tk.Label(
+            footer,
+            text="ESC exits any simulation  \u2022  pyautogui failsafe: move mouse to (0,0)  \u2022  Educational project",
+            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
+        ).pack(pady=5)
+
         # ── Card Grid ──
-        grid_frame = tk.Frame(self.root, bg=BG_DARK)
-        grid_frame.pack(fill="both", expand=True, padx=30, pady=(0, 25))
+        # The window is non-resizable and clamped to the display, so on a short
+        # screen (1366x768 and friends) the last row of cards used to be cut off
+        # the bottom with no way to reach it. Hosting the grid in a canvas lets
+        # those rows scroll into view instead of disappearing.
+        grid_host = tk.Frame(self.root, bg=BG_DARK)
+        grid_host.pack(fill="both", expand=True, padx=30, pady=(0, 25))
+
+        self.grid_canvas = tk.Canvas(grid_host, bg=BG_DARK, highlightthickness=0, bd=0)
+        self.grid_scroll = tk.Scrollbar(grid_host, orient="vertical",
+                                        command=self.grid_canvas.yview)
+        self.grid_canvas.configure(yscrollcommand=self.grid_scroll.set)
+        self.grid_scroll.pack(side="right", fill="y")
+        self.grid_canvas.pack(side="left", fill="both", expand=True)
+
+        grid_frame = tk.Frame(self.grid_canvas, bg=BG_DARK)
+        self._grid_window = self.grid_canvas.create_window(
+            (0, 0), window=grid_frame, anchor="nw")
 
         # Widen the grid rather than adding a fourth row: three rows of cards
-        # plus the header is about as tall as a 1080p screen can show, and the
-        # window height is clamped to the display, which would clip card text.
+        # plus the header is about as tall as a 1080p screen can show.
         cols = 3 if len(SIMULATIONS) <= 9 else 4
         wrap = 240 if cols == 3 else 195
 
@@ -3709,14 +3795,15 @@ class Launcher:
         for r in range(num_rows):
             grid_frame.rowconfigure(r, weight=1)
 
-        # ── Footer ──
-        footer = tk.Frame(self.root, bg=BG_DARK, height=30)
-        footer.pack(fill="x")
-        tk.Label(
-            footer,
-            text="ESC exits any simulation  \u2022  pyautogui failsafe: move mouse to (0,0)  \u2022  Educational project",
-            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
-        ).pack(pady=5)
+        # Ask for the grid's natural size so the window still sizes itself to
+        # fit the cards when the screen is big enough to show them all.
+        self.grid_inner = grid_frame
+        grid_frame.update_idletasks()
+        self.grid_canvas.configure(width=grid_frame.winfo_reqwidth(),
+                                   height=grid_frame.winfo_reqheight())
+        self.grid_canvas.bind("<Configure>", self._on_grid_resize)
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.bind_all(seq, self._on_grid_scroll)
 
     def _create_card(self, parent, sim, wraplength=240):
         """Create a glassmorphic simulation card."""
@@ -3773,6 +3860,31 @@ class Launcher:
             widget.bind("<Button-1>", lambda e, s=sim: self._launch(s["id"]))
 
         return card
+
+    def _on_grid_resize(self, event):
+        """Keep the card grid the width of its canvas and the scrollbar honest."""
+        self.grid_canvas.itemconfigure(self._grid_window, width=event.width)
+        self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
+        needed = self.grid_inner.winfo_reqheight() > event.height
+        if needed and not self.grid_scroll.winfo_ismapped():
+            # 'before' restores the packing order: the scrollbar must claim its
+            # strip ahead of the expanding canvas or it gets no space at all.
+            self.grid_scroll.pack(side="right", fill="y", before=self.grid_canvas)
+        elif not needed and self.grid_scroll.winfo_ismapped():
+            self.grid_scroll.pack_forget()
+            self.grid_canvas.yview_moveto(0)
+
+    def _on_grid_scroll(self, event):
+        """Mouse-wheel scrolling, in the two flavours X11 and Windows/macOS use."""
+        if not self.grid_scroll.winfo_ismapped():
+            return
+        if getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+        else:
+            delta = -1 if event.delta > 0 else 1
+        self.grid_canvas.yview_scroll(delta, "units")
 
     def _on_card_enter(self, card, sim):
         if card._hover_active:
@@ -3865,7 +3977,9 @@ class Launcher:
                 self.active_sim = sim_class(self.root, self._show_launcher)
         except Exception:
             # If a simulation fails to start, restore the launcher instead of
-            # leaving the app withdrawn and seemingly frozen.
+            # leaving the app withdrawn and seemingly frozen. Print the cause:
+            # swallowing it silently turns a real bug into a dead-looking card.
+            traceback.print_exc()
             self.active_sim = None
             self._show_launcher()
 
