@@ -51,8 +51,8 @@ ACCENT = "#00e5a0"
 ACCENT_DIM = "#00b87a"
 ACCENT_GLOW = "#00ffb3"
 TEXT_PRIMARY = "#e8edf5"
-TEXT_SECONDARY = "#7a8ba8"
-TEXT_MUTED = "#4a5568"
+TEXT_SECONDARY = "#93a3bd"  # 6.8-7.8:1 on the dark surfaces (was 5.0:1)
+TEXT_MUTED = "#75839c"      # 4.5-5.2:1; the old #4a5568 measured 2.3-2.7:1
 TEXT_DESC = "#8593ac"  # card body copy — readable but recedes behind titles
 BORDER = "#1e2d4a"
 BORDER_HOVER = "#2a4070"
@@ -61,7 +61,7 @@ YELLOW_ACCENT = "#ffd32a"
 BLUE_ACCENT = "#3498db"
 CYAN_ACCENT = "#00d2d3"
 ORANGE_ACCENT = "#ff9f43"
-PURPLE_ACCENT = "#9b59b6"
+PURPLE_ACCENT = "#b07cc6"   # 5.4:1 on card bg (was 3.7:1)
 MAGENTA_ACCENT = "#e056fd"
 MATRIX_GREEN = "#00ff41"
 
@@ -89,7 +89,7 @@ SIMULATIONS = [
         "title": "Windows Update",
         "subtitle": "System Update Simulation",
         "desc": "Classic Windows Update with animated spinner dots and slow, erratic progress. Fullscreen, hidden cursor, always-on-top. Auto-exits when done. ESC to exit early.",
-        "color": "#0078d4",
+        "color": "#2e9be0",  # lifted from Windows' #0078d4: 3.8:1 -> 5.7:1
     },
     {
         "id": "disk_defrag",
@@ -113,7 +113,7 @@ SIMULATIONS = [
         "title": "Code Compiler",
         "subtitle": "Build & Test Pipeline",
         "desc": "Developer build console: resolves dependencies, compiles modules, bundles assets, and runs a passing test suite with live scrolling output. Looks like you're deep in a build. ESC or Stop to exit.",
-        "color": "#9b59b6",
+        "color": "#b07cc6",
     },
     {
         "id": "ai_training",
@@ -145,7 +145,7 @@ SIMULATIONS = [
         "title": "Documentation",
         "subtitle": "How It Works & Why",
         "desc": "Full breakdown of every simulation mode, keep-alive mechanics, technical details, launcher features, and usage notes.",
-        "color": "#7a8ba8",
+        "color": "#93a3bd",  # 4.44:1 on a hovered card at the old value
     },
 ]
 
@@ -386,6 +386,7 @@ class BSODSimulation:
         self.start_time = time.time()
 
         self.win = tk.Toplevel(parent_root)
+        self.win.title("Windows")   # taskbar / alt-tab label
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="#0078d4")
@@ -439,13 +440,10 @@ class BSODSimulation:
         bottom = tk.Frame(container, bg="#0078d4")
         bottom.pack(anchor="w", pady=(10, 0))
 
-        qr_frame = tk.Frame(bottom, bg="white", width=90, height=90)
-        qr_frame.pack(side="left", padx=(0, 20))
-        qr_frame.pack_propagate(False)
-        tk.Label(
-            qr_frame, text="QR", font=("Consolas", 14, "bold"),
-            fg="#0078d4", bg="white"
-        ).place(relx=0.5, rely=0.5, anchor="center")
+        qr_canvas = tk.Canvas(bottom, width=90, height=90, bg="white",
+                              highlightthickness=0, bd=0)
+        qr_canvas.pack(side="left", padx=(0, 20))
+        self._draw_qr(qr_canvas, size=90, modules=21)
 
         info_frame = tk.Frame(bottom, bg="#0078d4")
         info_frame.pack(side="left")
@@ -477,6 +475,52 @@ class BSODSimulation:
             text=f"Stop code: {stop_code}",
             font=("Segoe UI", 11), fg="white", bg="#0078d4"
         ).pack(anchor="w", pady=(8, 0))
+
+        # Fullscreen, cursor hidden, no buttons: without this line there is
+        # nothing on screen telling the user how to get out.
+        tk.Label(
+            self.win, text="Press ESC to exit",
+            font=("Segoe UI", 8), fg="white", bg="#0078d4"
+        ).place(relx=0.5, rely=0.97, anchor="center")
+
+    @staticmethod
+    def _draw_qr(canvas, size=90, modules=21):
+        """Draw a QR-looking block pattern (decorative — it encodes nothing).
+
+        The old placeholder was a white square with the letters "QR" in it,
+        which is the one element on this screen that does not look like
+        Windows.
+        """
+        quiet = 2                                   # quiet zone, in modules
+        step = size / (modules + quiet * 2)
+
+        def cell(col, row):
+            x, y = (col + quiet) * step, (row + quiet) * step
+            canvas.create_rectangle(x, y, x + step, y + step,
+                                    fill="black", outline="")
+
+        def finder(col, row):
+            """The 7x7 position marker that sits in three corners."""
+            for dc in range(7):
+                for dr in range(7):
+                    if dc in (0, 6) or dr in (0, 6) or (2 <= dc <= 4 and 2 <= dr <= 4):
+                        cell(col + dc, row + dr)
+
+        reserved = set()
+        for fc, fr in ((0, 0), (modules - 7, 0), (0, modules - 7)):
+            finder(fc, fr)
+            for dc in range(-1, 8):
+                for dr in range(-1, 8):
+                    reserved.add((fc + dc, fr + dr))
+        for i in range(8, modules - 8):             # timing lines
+            if i % 2 == 0:
+                cell(i, 6)
+                cell(6, i)
+            reserved.update({(i, 6), (6, i)})
+        for col in range(modules):
+            for row in range(modules):
+                if (col, row) not in reserved and random.random() < 0.45:
+                    cell(col, row)
 
     def _tick(self):
         if not self.win.winfo_exists():
@@ -831,6 +875,7 @@ class WindowsUpdateSimulation:
         self.start_time = time.time()
 
         self.win = tk.Toplevel(parent_root)
+        self.win.title("Windows Update")   # taskbar / alt-tab label
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="#000000")
@@ -875,7 +920,7 @@ class WindowsUpdateSimulation:
         # ESC hint (subtle, bottom of screen)
         tk.Label(
             self.win, text="Press ESC to exit",
-            font=("Segoe UI", 8), fg="#333333", bg="#000000"
+            font=("Segoe UI", 8), fg="#808080", bg="#000000"
         ).place(relx=0.5, rely=0.97, anchor="center")
 
         self.spinner_step = 0
@@ -980,7 +1025,10 @@ class DiskDefragSimulation:
             tk.Label(row, text="Solid state drive" if i == 0 else "Hard disk drive",
                      font=("Segoe UI", 9), fg="#aaa", bg=row["bg"],
                      width=15, anchor="w").pack(side="left", padx=5)
-            tk.Label(row, text=datetime.now().strftime("%m/%d/%Y %I:%M %p"),
+            tk.Label(row, text=(datetime.now() - timedelta(
+                         days=random.randint(2, 27),
+                         minutes=random.randint(0, 720))
+                     ).strftime("%m/%d/%Y %I:%M %p"),
                      font=("Segoe UI", 9), fg="#aaa", bg=row["bg"],
                      width=20, anchor="w").pack(side="left", padx=5)
             status_lbl = tk.Label(row, text="Queued", font=("Segoe UI", 9),
@@ -1032,7 +1080,7 @@ class DiskDefragSimulation:
         # Exit button
         tk.Button(
             self.win, text="Stop & Exit", font=("Segoe UI", 9, "bold"),
-            bg="#442222", fg=RED_ACCENT, relief="flat", padx=15, pady=4,
+            bg="#331616", fg=RED_ACCENT, relief="flat", padx=15, pady=4,
             command=self._exit, cursor="hand2"
         ).pack(anchor="e", padx=20, pady=(10, 15))
 
@@ -1699,6 +1747,7 @@ class MatrixRainSimulation:
         self.trail = 16
 
         self.win = tk.Toplevel(parent_root)
+        self.win.title("Screensaver")   # taskbar / alt-tab label
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="black")
@@ -1712,7 +1761,7 @@ class MatrixRainSimulation:
 
         # ESC hint, fades into the rain
         tk.Label(self.win, text="Press ESC to exit",
-                 font=("Consolas", 9), fg="#0a5a22", bg="black").place(
+                 font=("Consolas", 9), fg="#0f8f36", bg="black").place(
             relx=0.5, rely=0.98, anchor="center")
 
         self.win.after(60, self._setup_columns)
@@ -3488,6 +3537,8 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
   \u2022 "\U0001f3b2 Surprise Me" button launches a random simulation
   \u2022 Universal ESC panic-exit on every simulation window
   \u2022 Simulation registry pattern for clean extensibility
+  \u2022 Full keyboard control: Tab moves between cards, Return or Space
+    launches the focused one, and focus scrolls it into view
   \u2022 Card grid scrolls when the screen is too short for every row
   \u2022 Auto-center on screen, non-resizable
 
@@ -3596,6 +3647,7 @@ class Launcher:
         self.root.resizable(False, False)
 
         self.active_sim = None
+        self._status_after = None
         self.duration_var = tk.IntVar(value=2)
         self.unit_var = tk.StringVar(value="hours")
         self.intensity_var = tk.StringVar(value=DEFAULT_PROFILE)
@@ -3744,7 +3796,14 @@ class Launcher:
             text=self._intensity_hint_text(),
             font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
         )
-        self.intensity_hint.pack(pady=(0, 12))
+        self.intensity_hint.pack(pady=(0, 2))
+
+        # Empty until a launch fails; keeps its row so nothing jumps when shown.
+        self.status_label = tk.Label(
+            self.root, text="", font=("Segoe UI", 9, "bold"),
+            fg=RED_ACCENT, bg=BG_DARK
+        )
+        self.status_label.pack(pady=(0, 8))
 
         # ── Footer ──
         # Packed before the card grid, and to the bottom, so pack gives it its
@@ -3796,11 +3855,16 @@ class Launcher:
             grid_frame.rowconfigure(r, weight=1)
 
         # Ask for the grid's natural size so the window still sizes itself to
-        # fit the cards when the screen is big enough to show them all.
+        # fit the cards when the screen is big enough to show them all, plus
+        # room for the scrollbar. Without that reservation the scrollbar eats
+        # ~13px of card width the moment it appears, and the cards shrink
+        # below their requested size — clipping the last letters of the
+        # longest titles.
         self.grid_inner = grid_frame
         grid_frame.update_idletasks()
-        self.grid_canvas.configure(width=grid_frame.winfo_reqwidth(),
-                                   height=grid_frame.winfo_reqheight())
+        self.grid_canvas.configure(
+            width=grid_frame.winfo_reqwidth() + self.grid_scroll.winfo_reqwidth(),
+            height=grid_frame.winfo_reqheight())
         self.grid_canvas.bind("<Configure>", self._on_grid_resize)
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.root.bind_all(seq, self._on_grid_scroll)
@@ -3809,7 +3873,8 @@ class Launcher:
         """Create a glassmorphic simulation card."""
         card = tk.Frame(
             parent, bg=BG_CARD, highlightbackground=BORDER,
-            highlightthickness=1, cursor="hand2"
+            highlightthickness=1, cursor="hand2",
+            takefocus=1, highlightcolor=sim["color"]
         )
         card.columnconfigure(0, weight=1)
 
@@ -3852,12 +3917,22 @@ class Launcher:
         all_widgets = [card, inner, icon_label, title_label, sub_label, desc_label]
         card._hover_widgets = all_widgets
         card._hover_active = False
+        card._focus_active = False
         for widget in all_widgets:
             widget.bind("<Enter>", lambda e, c=card, s=sim:
                 self._on_card_enter(c, s))
             widget.bind("<Leave>", lambda e, c=card, s=sim:
                 self._on_card_leave(c, s))
-            widget.bind("<Button-1>", lambda e, s=sim: self._launch(s["id"]))
+            widget.bind("<Button-1>", lambda e, c=card, s=sim:
+                (c.focus_set(), self._launch(s["id"])))
+
+        # Keyboard: Tab moves between cards, Return or Space launches the
+        # focused one, and focus paints the same highlight as hover so you can
+        # see where you are.
+        card.bind("<Return>", lambda e, s=sim: self._launch(s["id"]))
+        card.bind("<space>", lambda e, s=sim: self._launch(s["id"]))
+        card.bind("<FocusIn>", lambda e, c=card, s=sim: self._on_card_focus(c, s, True))
+        card.bind("<FocusOut>", lambda e, c=card, s=sim: self._on_card_focus(c, s, False))
 
         return card
 
@@ -3892,6 +3967,27 @@ class Launcher:
         card._hover_active = True
         self._apply_hover(card, sim, True)
 
+    def _on_card_focus(self, card, sim, focused):
+        """Keyboard focus highlights a card exactly like hover does."""
+        card._focus_active = focused
+        if focused:
+            self._scroll_card_into_view(card)
+        self._apply_hover(card, sim, focused or card._hover_active)
+
+    def _scroll_card_into_view(self, card):
+        """Tabbing to a card below the fold must bring it on screen."""
+        try:
+            view_top = self.grid_canvas.canvasy(0)
+            view_h = self.grid_canvas.winfo_height()
+            total = max(1, self.grid_inner.winfo_reqheight())
+            top, bottom = card.winfo_y(), card.winfo_y() + card.winfo_height()
+            if top < view_top:
+                self.grid_canvas.yview_moveto(max(0.0, top / total))
+            elif bottom > view_top + view_h:
+                self.grid_canvas.yview_moveto(max(0.0, (bottom - view_h) / total))
+        except (tk.TclError, AttributeError):
+            pass
+
     def _on_card_leave(self, card, sim):
         # Check if mouse is still within the card bounds
         try:
@@ -3902,7 +3998,7 @@ class Launcher:
         except Exception:
             pass
         card._hover_active = False
-        self._apply_hover(card, sim, False)
+        self._apply_hover(card, sim, card._focus_active)
 
     def _apply_hover(self, card, sim, entering):
         bg = BG_CARD_HOVER if entering else BG_CARD
@@ -3975,13 +4071,27 @@ class Launcher:
                 )
             else:
                 self.active_sim = sim_class(self.root, self._show_launcher)
-        except Exception:
+        except Exception as exc:
             # If a simulation fails to start, restore the launcher instead of
             # leaving the app withdrawn and seemingly frozen. Print the cause:
             # swallowing it silently turns a real bug into a dead-looking card.
             traceback.print_exc()
             self.active_sim = None
             self._show_launcher()
+            self._flash_status(
+                f"⚠  {sim_id} could not start: {type(exc).__name__}. "
+                f"See the console for details.")
+
+    def _flash_status(self, message, seconds=8):
+        """Surface a problem in the launcher itself, not just on stdout."""
+        try:
+            self.status_label.config(text=message)
+            if self._status_after is not None:
+                self.root.after_cancel(self._status_after)
+            self._status_after = self.root.after(
+                seconds * 1000, lambda: self.status_label.config(text=""))
+        except tk.TclError:
+            pass
 
     def _show_launcher(self):
         """Return to the launcher after a simulation exits."""

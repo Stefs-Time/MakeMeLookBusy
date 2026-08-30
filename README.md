@@ -26,6 +26,7 @@ Desktop activity simulator with a glassmorphic launcher menu. Built with Python 
 - **🎲 Surprise Me** — launch a random simulation.
 - **Universal ESC** — press ESC to exit *any* simulation instantly.
 - **Scrolling card grid** — on short screens the grid scrolls, so every mode stays reachable.
+- **Keyboard navigation** — Tab between mode cards, Return/Space to launch the focused one.
 - **BI Trainer controls** — ← / → step through lessons, SPACE pauses the auto-advance.
 
 ## Requirements
@@ -53,6 +54,7 @@ The glassmorphic launcher will open. Pick a simulation mode, set a duration (in 
 
 ### Controls
 
+- **Tab / Return / Space** -- Move between mode cards and launch the focused one
 - **ESC** -- Exit *any* simulation instantly (fullscreen or windowed)
 - **Stop / Minimize buttons** -- Exit or hide windowed simulations (Scanner, Defrag, Stay Active, Code Compiler, AI Training)
 - **pyautogui failsafe** -- Move mouse to screen corner (0, 0) to force-stop input injection
