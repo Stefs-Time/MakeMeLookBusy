@@ -19,12 +19,19 @@ import time
 import random
 import string
 import math
+import re
+import traceback
 from datetime import datetime, timedelta
 
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
-except ImportError:
+except Exception:
+    # Deliberately broader than ImportError: pyautogui imports mouseinfo, which
+    # reads os.environ['DISPLAY'] at import time and raises KeyError on a
+    # headless Linux box (SSH session, CI runner, Wayland without XWayland).
+    # The app is documented to run without keep-alive rather than fail to start,
+    # so any import-time failure degrades instead of killing the launcher.
     pyautogui = None
 
 
@@ -44,8 +51,8 @@ ACCENT = "#00e5a0"
 ACCENT_DIM = "#00b87a"
 ACCENT_GLOW = "#00ffb3"
 TEXT_PRIMARY = "#e8edf5"
-TEXT_SECONDARY = "#7a8ba8"
-TEXT_MUTED = "#4a5568"
+TEXT_SECONDARY = "#93a3bd"  # 6.8-7.8:1 on the dark surfaces (was 5.0:1)
+TEXT_MUTED = "#75839c"      # 4.5-5.2:1; the old #4a5568 measured 2.3-2.7:1
 TEXT_DESC = "#8593ac"  # card body copy — readable but recedes behind titles
 BORDER = "#1e2d4a"
 BORDER_HOVER = "#2a4070"
@@ -54,7 +61,7 @@ YELLOW_ACCENT = "#ffd32a"
 BLUE_ACCENT = "#3498db"
 CYAN_ACCENT = "#00d2d3"
 ORANGE_ACCENT = "#ff9f43"
-PURPLE_ACCENT = "#9b59b6"
+PURPLE_ACCENT = "#b07cc6"   # 5.4:1 on card bg (was 3.7:1)
 MAGENTA_ACCENT = "#e056fd"
 MATRIX_GREEN = "#00ff41"
 
@@ -82,7 +89,7 @@ SIMULATIONS = [
         "title": "Windows Update",
         "subtitle": "System Update Simulation",
         "desc": "Classic Windows Update with animated spinner dots and slow, erratic progress. Fullscreen, hidden cursor, always-on-top. Auto-exits when done. ESC to exit early.",
-        "color": "#0078d4",
+        "color": "#2e9be0",  # lifted from Windows' #0078d4: 3.8:1 -> 5.7:1
     },
     {
         "id": "disk_defrag",
@@ -106,7 +113,7 @@ SIMULATIONS = [
         "title": "Code Compiler",
         "subtitle": "Build & Test Pipeline",
         "desc": "Developer build console: resolves dependencies, compiles modules, bundles assets, and runs a passing test suite with live scrolling output. Looks like you're deep in a build. ESC or Stop to exit.",
-        "color": "#9b59b6",
+        "color": "#b07cc6",
     },
     {
         "id": "ai_training",
@@ -125,12 +132,20 @@ SIMULATIONS = [
         "color": "#00ff41",
     },
     {
+        "id": "bi_trainer",
+        "icon": "\U0001f4ca",
+        "title": "THE BI TRAINER",
+        "subtitle": "BI Chart & Insight Clinic",
+        "desc": "Scrolling BI masterclass: 12 chart types drawn live, the SQL/DAX/pandas behind each one, and the rules for reading them honestly. Arrows steer, SPACE pauses.",
+        "color": "#3498db",
+    },
+    {
         "id": "docs",
         "icon": "\u2139",
         "title": "Documentation",
         "subtitle": "How It Works & Why",
         "desc": "Full breakdown of every simulation mode, keep-alive mechanics, technical details, launcher features, and usage notes.",
-        "color": "#7a8ba8",
+        "color": "#93a3bd",  # 4.44:1 on a hovered card at the old value
     },
 ]
 
@@ -161,6 +176,28 @@ DEFAULT_PROFILE = "Normal"
 HARMLESS_KEYS = ["shift", "ctrl", "f13", "f14", "f15"]
 
 
+def usable_keys():
+    """Filter HARMLESS_KEYS down to keys this machine can actually press.
+
+    ``pyautogui.KEYBOARD_KEYS`` advertises F13-F15 on every platform, but X11
+    resolves them to keycode 0 on the standard layouts that stop at F12 — there
+    is no such physical key to press. Sending an unmapped keycode raises an X
+    protocol error, and on some Xlib versions leaves the connection wedged so
+    the *next* injection blocks instead of returning. Either way key presses
+    silently stop happening, which is the one thing the engine exists to do.
+    Windows and macOS expose no such mapping to check, so there we keep the
+    full list and rely on the caller's exception handling.
+    """
+    if pyautogui is None:
+        return list(HARMLESS_KEYS)
+    x11 = getattr(pyautogui, "_pyautogui_x11", None)
+    mapping = getattr(x11, "keyboardMapping", None)
+    if not mapping:
+        return list(HARMLESS_KEYS)
+    usable = [k for k in HARMLESS_KEYS if mapping.get(k)]
+    return usable or ["shift"]
+
+
 class KeepAliveEngine:
     """Background thread that prevents idle/away status.
 
@@ -177,6 +214,8 @@ class KeepAliveEngine:
         self.mouse_moves = 0
         self.key_presses = 0
         self.last_action = "idle"
+        # Resolved once: the keymap does not change while the app runs.
+        self.keys = usable_keys()
         self.set_profile(profile)
 
     def set_profile(self, name):
@@ -247,11 +286,11 @@ class KeepAliveEngine:
             pass
 
     def _do_key(self):
-        """Press a randomly chosen harmless key."""
+        """Press a randomly chosen harmless key this platform supports."""
         if not pyautogui:
             return
         try:
-            pyautogui.press(random.choice(HARMLESS_KEYS))
+            pyautogui.press(random.choice(self.keys))
             self.key_presses += 1
             self.last_action = "key"
         except Exception:
@@ -286,11 +325,32 @@ def _post(win, func, delay=0):
     window is destroyed mid-flight (ESC, Stop, or auto-exit), ``after`` raises
     TclError (window gone) or RuntimeError (no main loop). Both are benign
     during shutdown, so we swallow them instead of crashing the worker thread.
+
+    The callback itself is guarded for the same reason: a worker can win the
+    race and queue an update microseconds before ``destroy()`` runs, and the
+    callback then fires against dead widgets. Tk reports that as a traceback on
+    the console rather than crashing, but it is noise from a shutdown that
+    otherwise went fine.
     """
+    def guarded():
+        try:
+            func()
+        except tk.TclError:
+            pass
+
     try:
-        return win.after(delay, func)
+        return win.after(delay, guarded)
     except (tk.TclError, RuntimeError):
         return None
+
+
+def _format_duration(seconds):
+    """Human runtime label: sub-hour durations must not read as '0h'."""
+    minutes = int(round(seconds / 60.0))
+    if minutes < 60:
+        return f"{max(1, minutes)}m"
+    hours, rem = divmod(minutes, 60)
+    return f"{hours}h" if rem == 0 else f"{hours}h{rem:02d}m"
 
 
 def _init_styles():
@@ -309,6 +369,8 @@ def _init_styles():
                      background=PURPLE_ACCENT, troughcolor="#1a2235")
     style.configure("Magenta.Horizontal.TProgressbar",
                      background=MAGENTA_ACCENT, troughcolor="#1a2235")
+    style.configure("BI.Horizontal.TProgressbar",
+                     background=BLUE_ACCENT, troughcolor="#132038")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -324,6 +386,7 @@ class BSODSimulation:
         self.start_time = time.time()
 
         self.win = tk.Toplevel(parent_root)
+        self.win.title("Windows")   # taskbar / alt-tab label
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="#0078d4")
@@ -377,13 +440,10 @@ class BSODSimulation:
         bottom = tk.Frame(container, bg="#0078d4")
         bottom.pack(anchor="w", pady=(10, 0))
 
-        qr_frame = tk.Frame(bottom, bg="white", width=90, height=90)
-        qr_frame.pack(side="left", padx=(0, 20))
-        qr_frame.pack_propagate(False)
-        tk.Label(
-            qr_frame, text="QR", font=("Consolas", 14, "bold"),
-            fg="#0078d4", bg="white"
-        ).place(relx=0.5, rely=0.5, anchor="center")
+        qr_canvas = tk.Canvas(bottom, width=90, height=90, bg="white",
+                              highlightthickness=0, bd=0)
+        qr_canvas.pack(side="left", padx=(0, 20))
+        self._draw_qr(qr_canvas, size=90, modules=21)
 
         info_frame = tk.Frame(bottom, bg="#0078d4")
         info_frame.pack(side="left")
@@ -415,6 +475,52 @@ class BSODSimulation:
             text=f"Stop code: {stop_code}",
             font=("Segoe UI", 11), fg="white", bg="#0078d4"
         ).pack(anchor="w", pady=(8, 0))
+
+        # Fullscreen, cursor hidden, no buttons: without this line there is
+        # nothing on screen telling the user how to get out.
+        tk.Label(
+            self.win, text="Press ESC to exit",
+            font=("Segoe UI", 8), fg="white", bg="#0078d4"
+        ).place(relx=0.5, rely=0.97, anchor="center")
+
+    @staticmethod
+    def _draw_qr(canvas, size=90, modules=21):
+        """Draw a QR-looking block pattern (decorative — it encodes nothing).
+
+        The old placeholder was a white square with the letters "QR" in it,
+        which is the one element on this screen that does not look like
+        Windows.
+        """
+        quiet = 2                                   # quiet zone, in modules
+        step = size / (modules + quiet * 2)
+
+        def cell(col, row):
+            x, y = (col + quiet) * step, (row + quiet) * step
+            canvas.create_rectangle(x, y, x + step, y + step,
+                                    fill="black", outline="")
+
+        def finder(col, row):
+            """The 7x7 position marker that sits in three corners."""
+            for dc in range(7):
+                for dr in range(7):
+                    if dc in (0, 6) or dr in (0, 6) or (2 <= dc <= 4 and 2 <= dr <= 4):
+                        cell(col + dc, row + dr)
+
+        reserved = set()
+        for fc, fr in ((0, 0), (modules - 7, 0), (0, modules - 7)):
+            finder(fc, fr)
+            for dc in range(-1, 8):
+                for dr in range(-1, 8):
+                    reserved.add((fc + dc, fr + dr))
+        for i in range(8, modules - 8):             # timing lines
+            if i % 2 == 0:
+                cell(i, 6)
+                cell(6, i)
+            reserved.update({(i, 6), (6, i)})
+        for col in range(modules):
+            for row in range(modules):
+                if (col, row) not in reserved and random.random() < 0.45:
+                    cell(col, row)
 
     def _tick(self):
         if not self.win.winfo_exists():
@@ -633,7 +739,8 @@ class SecurityScanSimulation:
         self.start_time = time.time()
         keep_alive.start()
         self._log("=== SCAN INITIATED ===", "green")
-        self._log(f"Runtime: {self.duration // 3600}h | Engine: v9.4 | Mode: Full Behavioral", "muted")
+        self._log(f"Runtime: {_format_duration(self.duration)} | Engine: v9.4 | "
+                  f"Mode: Full Behavioral", "muted")
         threading.Thread(target=self._scan_loop, daemon=True).start()
         self._update_elapsed()
 
@@ -768,6 +875,7 @@ class WindowsUpdateSimulation:
         self.start_time = time.time()
 
         self.win = tk.Toplevel(parent_root)
+        self.win.title("Windows Update")   # taskbar / alt-tab label
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="#000000")
@@ -812,7 +920,7 @@ class WindowsUpdateSimulation:
         # ESC hint (subtle, bottom of screen)
         tk.Label(
             self.win, text="Press ESC to exit",
-            font=("Segoe UI", 8), fg="#333333", bg="#000000"
+            font=("Segoe UI", 8), fg="#808080", bg="#000000"
         ).place(relx=0.5, rely=0.97, anchor="center")
 
         self.spinner_step = 0
@@ -917,7 +1025,10 @@ class DiskDefragSimulation:
             tk.Label(row, text="Solid state drive" if i == 0 else "Hard disk drive",
                      font=("Segoe UI", 9), fg="#aaa", bg=row["bg"],
                      width=15, anchor="w").pack(side="left", padx=5)
-            tk.Label(row, text=datetime.now().strftime("%m/%d/%Y %I:%M %p"),
+            tk.Label(row, text=(datetime.now() - timedelta(
+                         days=random.randint(2, 27),
+                         minutes=random.randint(0, 720))
+                     ).strftime("%m/%d/%Y %I:%M %p"),
                      font=("Segoe UI", 9), fg="#aaa", bg=row["bg"],
                      width=20, anchor="w").pack(side="left", padx=5)
             status_lbl = tk.Label(row, text="Queued", font=("Segoe UI", 9),
@@ -969,7 +1080,7 @@ class DiskDefragSimulation:
         # Exit button
         tk.Button(
             self.win, text="Stop & Exit", font=("Segoe UI", 9, "bold"),
-            bg="#442222", fg=RED_ACCENT, relief="flat", padx=15, pady=4,
+            bg="#331616", fg=RED_ACCENT, relief="flat", padx=15, pady=4,
             command=self._exit, cursor="hand2"
         ).pack(anchor="e", padx=20, pady=(10, 15))
 
@@ -1171,8 +1282,11 @@ class StayActiveSimulation:
         self.win.after(1000, self._tick)
 
     def _exit(self):
-        if not self.running and self.win.winfo_exists():
-            # Natural completion path — just destroy and return
+        if not self.win.winfo_exists():
+            return                      # already torn down — nothing to do
+        if not self.running:
+            # Natural completion path: _tick already stopped the keep-alive
+            # engine, so just close and hand control back.
             self.win.destroy()
             self.on_exit()
             return
@@ -1633,6 +1747,7 @@ class MatrixRainSimulation:
         self.trail = 16
 
         self.win = tk.Toplevel(parent_root)
+        self.win.title("Screensaver")   # taskbar / alt-tab label
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="black")
@@ -1646,7 +1761,7 @@ class MatrixRainSimulation:
 
         # ESC hint, fades into the rain
         tk.Label(self.win, text="Press ESC to exit",
-                 font=("Consolas", 9), fg="#0a5a22", bg="black").place(
+                 font=("Consolas", 9), fg="#0f8f36", bg="black").place(
             relx=0.5, rely=0.98, anchor="center")
 
         self.win.after(60, self._setup_columns)
@@ -1717,6 +1832,1519 @@ class MatrixRainSimulation:
 
 
 # ═══════════════════════════════════════════════════════════════
+# SIMULATION: THE BI TRAINER
+# ═══════════════════════════════════════════════════════════════
+
+# Series palette used by every chart renderer in the BI Trainer.
+BI_PALETTE = [BLUE_ACCENT, ACCENT, YELLOW_ACCENT, MAGENTA_ACCENT,
+              ORANGE_ACCENT, CYAN_ACCENT, PURPLE_ACCENT, RED_ACCENT]
+
+BI_PLOT_BG = "#05080f"
+BI_PANEL_BG = "#0b111d"
+BI_GRID = "#132038"
+BI_AXIS = "#20304e"
+
+# Chatter appended to the insight feed between lesson takeaways so the
+# console keeps scrolling even in the quiet gaps of a lesson.
+BI_FEED_CHATTER = [
+    "grain check: fact_sales is one row per order line — never per order",
+    "semantic model refreshed  •  12 tables  •  4.2M rows  •  38s",
+    "SELECT is fine; the joins are what change your denominator",
+    "measure [Revenue YoY %] = DIVIDE([Revenue] - [Revenue LY], [Revenue LY])",
+    "filter context beats row context — always check what the visual is slicing",
+    "null ≠ 0: a missing month is a gap in the line, not a drop to zero",
+    "averages hide the distribution; always look at the spread before you act",
+    "correlation checked against a lagged series — no causal claim made",
+    "seasonality flagged: December spike repeats in 3 of 3 prior years",
+    "sample size on this slice is n=14 — treat the % as directional only",
+    "row-level security applied: viewer sees their region only",
+    "cardinality warning: 1.2M distinct values on a slicer field",
+    "outlier retained (not dropped) and annotated on the visual",
+    "comparing like-for-like: both periods normalised to 30 days",
+    "definition locked: 'active user' = ≥1 session in trailing 28 days",
+]
+
+BI_LESSONS = [
+    {
+        "chart": "bar",
+        "title": "Column / Bar Chart",
+        "family": "COMPARISON",
+        "question": "Which categories are biggest — and by how much?",
+        "read": [
+            "Rank before you read. Sort descending unless the axis has a natural"
+            " order (time, size bands, survey scale).",
+            "Judge by bar LENGTH, so the value axis must start at zero. A truncated"
+            " baseline turns a 4% gap into a visual landslide.",
+            "Compare the top bar to the MEDIAN bar, not to the total — that gap is"
+            " the one you can actually act on.",
+            "Keep it under ~12 bars. Roll the tail into 'Other' or switch to a"
+            " table with in-cell bars.",
+            "Horizontal bars when labels are long; vertical columns when the"
+            " category is time-like.",
+        ],
+        "pitfall": "Non-zero baselines and 3-D bars are the two fastest ways to lie with a column chart.",
+        "lang": "SQL  ·  warehouse aggregate",
+        "code": """-- Revenue by region, ranked. Aggregate BEFORE you visualise:
+-- let the warehouse do the grouping, not the BI tool.
+SELECT
+    r.region_name                        AS region,
+    SUM(f.net_revenue)                   AS revenue,
+    COUNT(DISTINCT f.order_id)           AS orders,
+    SUM(f.net_revenue)
+      / NULLIF(COUNT(DISTINCT f.order_id), 0) AS avg_order_value
+FROM   fact_sales      f
+JOIN   dim_region      r ON r.region_id = f.region_id
+WHERE  f.order_date >= DATE_TRUNC('quarter', CURRENT_DATE)
+  AND  f.is_returned = FALSE          -- exclude returns, or AOV lies
+GROUP  BY r.region_name
+ORDER  BY revenue DESC;""",
+        "insights": [
+            "top region leads the median by 1.7x — that is the actionable gap",
+            "bars sorted descending; axis pinned to zero for honest length ratios",
+            "returns excluded at source, so AOV is not inflated",
+        ],
+    },
+    {
+        "chart": "line",
+        "title": "Line Chart",
+        "family": "TREND OVER TIME",
+        "question": "Which way is this moving, and is the move real?",
+        "read": [
+            "Read the SLOPE, not the last point. One high dot is noise; a sustained"
+            " change of slope is a trend.",
+            "Always plot enough history to see the previous cycle — 13 months beats"
+            " 3 months for anything seasonal.",
+            "A zero baseline is optional here (you are reading change, not size) —"
+            " but say so on the axis.",
+            "Overlay last year, or a rolling 7/28-day average, to separate the"
+            " signal from the weekly saw-tooth.",
+            "Gaps mean missing data. Never connect across a gap — that invents a"
+            " trend nobody measured.",
+        ],
+        "pitfall": "More than ~5 lines is spaghetti. Small multiples beat a crowded single axis every time.",
+        "lang": "Python  ·  pandas rolling window",
+        "code": """import pandas as pd
+
+df = pd.read_parquet("daily_revenue.parquet")
+df["date"] = pd.to_datetime(df["date"])
+
+# Reindex to a complete calendar so missing days stay VISIBLE as gaps
+full = pd.date_range(df["date"].min(), df["date"].max(), freq="D")
+s = df.set_index("date")["revenue"].reindex(full)
+
+trend = pd.DataFrame({
+    "actual":   s,
+    "ma_7":     s.rolling(7,  min_periods=7).mean(),   # weekly noise out
+    "ma_28":    s.rolling(28, min_periods=28).mean(),  # true direction
+    "yoy_pct":  s.pct_change(365) * 100,
+})
+print(trend.tail(10))""",
+        "insights": [
+            "28-day average is still climbing while dailies wobble — trend holds",
+            "calendar reindexed: two missing days render as gaps, not as zeros",
+            "YoY comparison aligned on day-of-week to kill the saw-tooth",
+        ],
+    },
+    {
+        "chart": "stacked_area",
+        "title": "Stacked Area",
+        "family": "COMPOSITION OVER TIME",
+        "question": "Is the mix changing while the total grows?",
+        "read": [
+            "Only the BOTTOM band sits on a flat baseline. Every band above it"
+            " rides on the ones below, so read totals, not individual shapes.",
+            "The top edge is the total. If you need each segment's own trend, use"
+            " small multiples or unstack to lines.",
+            "Switch to 100%-stacked when the question is share-of-mix; keep it"
+            " absolute when the question is growth.",
+            "Order the bands: biggest and most stable at the bottom, volatile at"
+            " the top, so the noise does not shake everything.",
+            "3–5 bands maximum. Anything more and the middle becomes unreadable.",
+        ],
+        "pitfall": "Readers routinely misjudge a middle band as shrinking when the band below it merely grew.",
+        "lang": "Power Query  ·  M — unpivot to tidy shape",
+        "code": """let
+    Source   = Sql.Database("dw-prod", "analytics"),
+    Revenue  = Source{[Schema="mart", Item="revenue_by_segment"]}[Data],
+
+    // BI tools want TIDY data: one row per (period, segment, value)
+    Unpivot  = Table.UnpivotOtherColumns(
+                   Revenue, {"month"}, "segment", "revenue"),
+
+    Typed    = Table.TransformColumnTypes(Unpivot, {
+                   {"month",   type date},
+                   {"segment", type text},
+                   {"revenue", Currency.Type}}),
+
+    // Stable band order — biggest / steadiest at the bottom
+    Ranked   = Table.AddColumn(Typed, "sort_order", each
+                   if [segment] = "Enterprise"  then 1
+                   else if [segment] = "Mid-Market" then 2
+                   else 3, Int64.Type)
+in
+    Ranked""",
+        "insights": [
+            "total is up 22% but SMB share fell 9pts — growth is mix-driven",
+            "bands ordered by stability so the volatile segment sits on top",
+            "unpivoted to tidy rows: one record per month per segment",
+        ],
+    },
+    {
+        "chart": "donut",
+        "title": "Donut / Pie",
+        "family": "PART-TO-WHOLE",
+        "question": "How is one total split, right now?",
+        "read": [
+            "Use it only when the slices sum to a meaningful 100% of ONE total at"
+            " ONE point in time.",
+            "Humans compare angles badly. Print the % on every slice or don't"
+            " bother with the chart.",
+            "Keep to ≤5 slices, ordered largest-first from 12 o'clock clockwise.",
+            "Never use two pies to compare periods — a bar chart of the same"
+            " splits answers that far faster.",
+            "The hole in a donut is free real estate: put the total in it.",
+        ],
+        "pitfall": "If any slice is 'Other' at 30%, the chart is hiding the actual answer.",
+        "lang": "DAX  ·  share-of-total measure",
+        "code": """-- Share of total that RESPECTS the visual's filter context
+Revenue = SUM ( fact_sales[net_revenue] )
+
+Revenue % of Total =
+VAR CurrentRevenue = [Revenue]
+VAR TotalRevenue =
+    CALCULATE (
+        [Revenue],
+        REMOVEFILTERS ( dim_product[category] )   -- denominator = the whole
+    )
+RETURN
+    DIVIDE ( CurrentRevenue, TotalRevenue )       -- DIVIDE, never "/"
+
+-- Guard the long tail so the donut never grows a 6th slice
+Category Label =
+IF ( [Revenue % of Total] < 0.03, "Other", SELECTEDVALUE ( dim_product[category] ) )""",
+        "insights": [
+            "5 slices, labelled, largest-first — angles never read alone",
+            "REMOVEFILTERS fixes the denominator to the true whole",
+            "tail below 3% folded into 'Other' to keep the split legible",
+        ],
+    },
+    {
+        "chart": "scatter",
+        "title": "Scatter Plot",
+        "family": "RELATIONSHIP",
+        "question": "Do these two measures move together?",
+        "read": [
+            "Shape first: tight band = strong relationship, cloud = none, curve ="
+            " a real relationship your linear fit will miss.",
+            "Direction is the sign, tightness is the strength. Report r AND the"
+            " sample size — r = 0.9 on n = 5 is nothing.",
+            "Look for clusters and outliers before you trust the trend line; two"
+            " groups can fake a slope that neither has.",
+            "Correlation is not causation, and a lagged variable often explains"
+            " both. Say which way you think it runs and why.",
+            "Size or colour a third measure only if it is genuinely ordinal.",
+        ],
+        "pitfall": "Simpson's paradox: the overall slope can point the opposite way to every subgroup's slope.",
+        "lang": "Python  ·  correlation with the caveats attached",
+        "code": """import numpy as np, pandas as pd
+from scipy import stats
+
+d = df.dropna(subset=["ad_spend", "revenue"])
+r, p = stats.pearsonr(d["ad_spend"], d["revenue"])
+slope, intercept = np.polyfit(d["ad_spend"], d["revenue"], 1)
+
+print(f"n = {len(d):,}   r = {r:.2f}   p = {p:.4f}")
+print(f"fit: revenue = {slope:.2f} * spend + {intercept:,.0f}")
+
+# Check every subgroup before believing the pooled slope (Simpson's paradox)
+for seg, g in d.groupby("segment"):
+    if len(g) > 30:
+        rs, _ = stats.pearsonr(g["ad_spend"], g["revenue"])
+        print(f"  {seg:<12} n={len(g):>5}  r={rs:+.2f}")""",
+        "insights": [
+            "r = +0.71 on n = 240 — strong, and every subgroup agrees in sign",
+            "two outliers annotated, not deleted; both are real campaign spikes",
+            "fit is linear and the cloud is linear — no curve being flattened",
+        ],
+    },
+    {
+        "chart": "histogram",
+        "title": "Histogram",
+        "family": "DISTRIBUTION",
+        "question": "What does the spread look like behind the average?",
+        "read": [
+            "Find the SHAPE: one peak, two peaks, or a long tail. Two peaks means"
+            " you are averaging two different populations.",
+            "Skew moves the mean away from the median. When they disagree, quote"
+            " the median and say so.",
+            "Bin width is a decision, not a default. Too wide hides the shape, too"
+            " narrow turns it into noise — try a few.",
+            "The x-axis is a measure here, not a category, so the bars touch. Gaps"
+            " between bars mean gaps in the data.",
+            "Read the tail deliberately: p95 and p99 are where SLAs and complaints"
+            " live.",
+        ],
+        "pitfall": "'Average order value' on a bimodal distribution describes a customer who does not exist.",
+        "lang": "SQL  ·  bins and percentiles together",
+        "code": """-- Distribution + the percentiles you will be asked about anyway
+WITH binned AS (
+    SELECT
+        WIDTH_BUCKET(order_value, 0, 500, 20) AS bin,
+        order_value
+    FROM fact_sales
+    WHERE order_date >= CURRENT_DATE - INTERVAL '90 days'
+)
+SELECT
+    bin * 25                          AS bin_floor,
+    COUNT(*)                          AS orders,
+    ROUND(AVG(order_value), 2)        AS mean_in_bin
+FROM binned
+GROUP BY bin
+ORDER BY bin;
+
+SELECT
+    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY order_value) AS p50,
+    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY order_value) AS p95,
+    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY order_value) AS p99,
+    AVG(order_value)                                          AS mean
+FROM fact_sales;""",
+        "insights": [
+            "mean sits 18% above the median — right-skewed, quote the median",
+            "single clean peak: one population, so the average is meaningful",
+            "p95 is 3.1x the median — that tail is where the escalations come from",
+        ],
+    },
+    {
+        "chart": "heatmap",
+        "title": "Heatmap Matrix",
+        "family": "PATTERN / DENSITY",
+        "question": "Where do two dimensions intersect most intensely?",
+        "read": [
+            "Scan for BLOCKS and STRIPES, not single cells. A bright row is a"
+            " pattern; a bright cell is an anecdote.",
+            "The colour scale is the whole chart. Sequential for magnitude,"
+            " diverging (with a fixed midpoint) for above/below target.",
+            "Keep the scale stable across refreshes or last week's 'hot' is this"
+            " week's 'cold' with no data change.",
+            "Sort rows and columns by total, or by a clustering, so the structure"
+            " lines up instead of scattering.",
+            "Always print a legend with real units — colour alone has no scale.",
+        ],
+        "pitfall": "Rainbow palettes invent boundaries that are not in the data. Use one hue, varying in lightness.",
+        "lang": "Python  ·  pivot to a matrix",
+        "code": """# Sessions by day-of-week x hour — the classic operations heatmap
+matrix = (
+    events
+      .assign(dow  = events["ts"].dt.day_name(),
+              hour = events["ts"].dt.hour)
+      .pivot_table(index="dow", columns="hour",
+                   values="session_id", aggfunc="nunique", fill_value=0)
+      .reindex(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"])   # keep real order
+)
+
+# Fix the scale ACROSS refreshes so colour stays comparable week to week
+vmin, vmax = 0, matrix.to_numpy().max()
+ax = sns.heatmap(matrix, cmap="mako", vmin=vmin, vmax=vmax,
+                 cbar_kws={"label": "unique sessions"})
+ax.set_title("Sessions by day and hour")""",
+        "insights": [
+            "the hot block is Tue–Thu 09:00–11:00 — that is a staffing decision",
+            "single hue, fixed vmin/vmax: colour means the same thing every week",
+            "weekend rows are uniformly cold — not missing data, genuinely quiet",
+        ],
+    },
+    {
+        "chart": "box",
+        "title": "Box & Whisker",
+        "family": "SPREAD & OUTLIERS",
+        "question": "How consistent is each group, not just how high?",
+        "read": [
+            "The box is the middle 50% (Q1→Q3). The line inside it is the MEDIAN,"
+            " never the mean.",
+            "Box height is consistency. A short box with a high median beats a tall"
+            " box with the same median — it's predictable.",
+            "Whiskers reach the furthest point within 1.5x IQR; dots beyond them"
+            " are candidate outliers, not errors.",
+            "Compare medians across groups first, then compare spreads. A shifted"
+            " median with identical spread is a clean, real difference.",
+            "Overlay the raw points when n is small — a box on n = 6 hides more"
+            " than it shows.",
+        ],
+        "pitfall": "Two groups can share a median and behave nothing alike. Never quote the median alone.",
+        "lang": "SQL  ·  quartiles per group",
+        "code": """-- The five numbers behind every box, per group
+SELECT
+    region,
+    COUNT(*)                                                     AS n,
+    MIN(delivery_days)                                           AS min_days,
+    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY delivery_days)  AS q1,
+    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY delivery_days)  AS median,
+    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY delivery_days)  AS q3,
+    MAX(delivery_days)                                           AS max_days,
+    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY delivery_days)
+      - PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY delivery_days) AS iqr
+FROM fact_delivery
+WHERE ship_date >= CURRENT_DATE - INTERVAL '60 days'
+GROUP BY region
+HAVING COUNT(*) >= 30          -- do not draw a box on a handful of rows
+ORDER BY median;""",
+        "insights": [
+            "same median, double the IQR: that region is unpredictable, not slower",
+            "outlier dots kept and labelled — they are the SLA breaches",
+            "groups with n < 30 suppressed rather than drawn misleadingly",
+        ],
+    },
+    {
+        "chart": "waterfall",
+        "title": "Waterfall (Bridge)",
+        "family": "CONTRIBUTION TO CHANGE",
+        "question": "What actually moved the number between the two periods?",
+        "read": [
+            "Read it as a sentence: start, plus these, minus those, equals end.",
+            "Bar SIZE is contribution magnitude; colour is only the sign. Keep"
+            " sign colours consistent everywhere.",
+            "Order the middle bars largest-to-smallest so the top two or three"
+            " drivers explain most of the move.",
+            "The bars must reconcile exactly to the ending total. If they don't,"
+            " you have a missing driver, not a rounding issue.",
+            "Fold trivia into 'Other', but only after the top drivers are clear.",
+        ],
+        "pitfall": "A bridge that doesn't reconcile is worse than no bridge — it looks authoritative and isn't.",
+        "lang": "DAX  ·  variance decomposition",
+        "code": """Revenue LY = CALCULATE ( [Revenue], SAMEPERIODLASTYEAR ( dim_date[date] ) )
+
+-- Split the move into price vs volume vs mix — one driver per bar
+Volume Effect =
+    ( [Units] - [Units LY] ) * [Avg Price LY]
+
+Price Effect =
+    ( [Avg Price] - [Avg Price LY] ) * [Units LY]
+
+Mix Effect =
+    ( [Units] - [Units LY] ) * ( [Avg Price] - [Avg Price LY] )
+
+-- Reconciliation guard: this MUST be zero or the bridge is lying
+Bridge Check =
+    [Revenue] - ( [Revenue LY] + [Volume Effect] + [Price Effect] + [Mix Effect] )""",
+        "insights": [
+            "volume explains 62% of the move; price is a distant second",
+            "bridge check returns 0.00 — the bars reconcile to the ending total",
+            "one negative driver, isolated and named, instead of buried in a net",
+        ],
+    },
+    {
+        "chart": "funnel",
+        "title": "Conversion Funnel",
+        "family": "PROCESS DROP-OFF",
+        "question": "Where are we losing people between the steps?",
+        "read": [
+            "Read the GAPS between stages, not the widths. The biggest percentage"
+            " drop is the story, wherever it sits.",
+            "Quote two rates per stage: step conversion (from the previous stage)"
+            " and overall (from the top).",
+            "Stages must be strictly sequential and mutually exclusive, or the"
+            " funnel double-counts.",
+            "Fix the cohort. Everyone in the funnel must have had time to reach the"
+            " last stage, or the bottom looks falsely narrow.",
+            "A wide top is not success. Cheap traffic that never converts just"
+            " flatters stage one.",
+        ],
+        "pitfall": "Mixing a 30-day cohort with a 3-day one makes the final stage collapse for purely mechanical reasons.",
+        "lang": "SQL  ·  cohort-safe funnel",
+        "code": """-- One row per user, first timestamp per stage, ONE fixed cohort
+WITH cohort AS (
+    SELECT user_id, MIN(ts) AS entered_at
+    FROM   events
+    WHERE  event_name = 'visit'
+      AND  ts >= CURRENT_DATE - INTERVAL '60 days'
+      AND  ts <  CURRENT_DATE - INTERVAL '30 days'   -- 30d to complete
+    GROUP  BY user_id
+),
+stages AS (
+    SELECT
+        c.user_id,
+        MIN(CASE WHEN e.event_name = 'signup' THEN e.ts END) AS signed_up,
+        MIN(CASE WHEN e.event_name = 'trial'  THEN e.ts END) AS trialled,
+        MIN(CASE WHEN e.event_name = 'paid'   THEN e.ts END) AS paid
+    FROM cohort c
+    LEFT JOIN events e
+           ON e.user_id = c.user_id
+          AND e.ts BETWEEN c.entered_at AND c.entered_at + INTERVAL '30 days'
+    GROUP BY c.user_id
+)
+SELECT COUNT(*)                                    AS visited,
+       COUNT(signed_up)                            AS signed_up,
+       COUNT(trialled)                             AS trialled,
+       COUNT(paid)                                 AS paid,
+       ROUND(100.0 * COUNT(paid) / COUNT(*), 2)    AS overall_pct
+FROM stages;""",
+        "insights": [
+            "biggest drop is signup → trial at -58% — that is the fix, not the top",
+            "cohort closed 30 days ago so every user had time to convert",
+            "stages exclusive: a user counts once, at their first occurrence",
+        ],
+    },
+    {
+        "chart": "pareto",
+        "title": "Pareto Chart",
+        "family": "PRIORITISATION",
+        "question": "Which few causes account for most of the effect?",
+        "read": [
+            "Bars descending, cumulative % line on the secondary axis, 80% marked"
+            " with a reference line.",
+            "Read across to where the line crosses 80%: everything left of that is"
+            " your working list.",
+            "The 80/20 split is an observation, not a law. Sometimes it is 60/20 —"
+            " report what you actually see.",
+            "Weight by IMPACT (cost, hours, revenue at risk), not by ticket count,"
+            " or you optimise for the cheap and frequent.",
+            "Re-run it after you fix the top cause. The tail reshuffles and the"
+            " next Pareto is a different chart.",
+        ],
+        "pitfall": "Counting incidents instead of costing them makes the noisiest category look like the most expensive.",
+        "lang": "Python  ·  cumulative share",
+        "code": """cause = (
+    tickets.groupby("root_cause")
+           .agg(incidents=("id", "count"),
+                cost=("cost_usd", "sum"))       # weight by IMPACT, not count
+           .sort_values("cost", ascending=False)
+)
+cause["cum_pct"] = 100 * cause["cost"].cumsum() / cause["cost"].sum()
+
+vital_few = cause[cause["cum_pct"] <= 80]
+print(f"{len(vital_few)} of {len(cause)} causes carry "
+      f"{cause['cum_pct'].iloc[len(vital_few) - 1]:.0f}% of total cost")
+print(vital_few.round(0))""",
+        "insights": [
+            "3 of 8 causes carry 79% of the cost — that is the sprint backlog",
+            "weighted by cost: the most frequent cause ranks fourth by impact",
+            "cumulative line crosses 80% at cause #3, marked on the axis",
+        ],
+    },
+    {
+        "chart": "kpi",
+        "title": "KPI Tiles + Sparklines",
+        "family": "EXECUTIVE SUMMARY",
+        "question": "Is this number good, and compared to what?",
+        "read": [
+            "A number alone is meaningless. Every tile needs a comparison: target,"
+            " last period, or same period last year.",
+            "The sparkline supplies the context the big number destroys — it shows"
+            " whether you are at a peak or a plateau.",
+            "Colour by DIRECTION OF GOODNESS, not by sign. Falling churn is green.",
+            "State the grain and the as-of time on the tile. 'Revenue' with no"
+            " period is a support ticket waiting to happen.",
+            "Four to six tiles. A dashboard of twenty tiles is a table with worse"
+            " typography.",
+        ],
+        "pitfall": "A green delta on a 2% sample is noise wearing a badge. Show n, or suppress the tile.",
+        "lang": "DAX  ·  KPI with target and trend",
+        "code": """Revenue MTD =
+    CALCULATE ( [Revenue], DATESMTD ( dim_date[date] ) )
+
+Revenue MTD LY =
+    CALCULATE ( [Revenue MTD], SAMEPERIODLASTYEAR ( dim_date[date] ) )
+
+Revenue MTD YoY % =
+    DIVIDE ( [Revenue MTD] - [Revenue MTD LY], [Revenue MTD LY] )
+
+-- Direction of goodness, not sign: churn falling is GOOD
+KPI Status =
+VAR Delta   = [Revenue MTD YoY %]
+VAR Target  = 0.05
+RETURN
+    SWITCH ( TRUE (),
+        Delta >= Target,     "on-track",
+        Delta >= 0,          "watch",
+                             "off-track" )""",
+        "insights": [
+            "every tile carries a comparison — target, prior period, or LY",
+            "sparkline shows this peak is the third of the quarter, not a first",
+            "delta suppressed where n < 30 instead of shown in confident green",
+        ],
+    },
+]
+
+
+def _bi_mix(c1, c2, t):
+    """Blend two ``#rrggbb`` colours; ``t`` runs 0.0 (c1) → 1.0 (c2)."""
+    t = max(0.0, min(1.0, t))
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+class BITrainerSimulation:
+    """THE BI TRAINER — a scrolling business-intelligence chart clinic.
+
+    Cycles through a deck of chart types. Each lesson draws a live, animated
+    example of the chart, reveals a "how to read it" panel one rule at a time,
+    types out the query/measure code that produces it, and streams analyst
+    commentary into an insight feed. Auto-advances, or drive it manually with
+    the PREV / NEXT / PAUSE controls.
+    """
+
+    LESSON_SECONDS = 18       # auto-advance interval
+    ENTRANCE_SECONDS = 0.9    # chart draw-on animation
+    FRAME_MS = 60             # redraw cadence
+    RULE_MS = 900             # gap between revealed interpretation rules
+    CODE_MS = 85              # per-line typing speed for the code panel
+
+    def __init__(self, parent_root, on_exit, duration_hours=2):
+        self.on_exit = on_exit
+        self.duration = duration_hours * 3600
+        self.start_time = time.time()
+        self.running = True
+        self.paused = False
+        self.pause_started = 0.0
+        self.paused_total = 0.0
+
+        self.index = 0
+        self.generation = 0
+        self.lesson_t0 = time.time()
+        self.data = {}
+
+        self.win = tk.Toplevel(parent_root)
+        self.win.title("THE BI TRAINER — Business Intelligence Chart Clinic")
+        self.win.geometry("1240x820")
+        self.win.configure(bg="#070b14")
+        self.win.protocol("WM_DELETE_WINDOW", self._exit)
+        self.win.bind("<Escape>", lambda e: self._exit())
+        self.win.bind("<Right>", lambda e: self._next())
+        self.win.bind("<Left>", lambda e: self._prev())
+        self.win.bind("<space>", lambda e: self._toggle_pause())
+
+        self._build_ui()
+        keep_alive.start()
+        self._load_lesson(0)
+        self._tick()
+        self._feed_loop()
+
+    # ── UI construction ────────────────────────────────────────
+
+    def _build_ui(self):
+        header = tk.Frame(self.win, bg="#0c1322", height=54)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(
+            header, text="\U0001f4ca  THE BI TRAINER",
+            font=("Segoe UI", 15, "bold"), fg=BLUE_ACCENT, bg="#0c1322"
+        ).pack(side="left", padx=(16, 8), pady=12)
+        tk.Label(
+            header, text="Chart types, code, and how to read the data",
+            font=("Segoe UI", 9), fg=TEXT_SECONDARY, bg="#0c1322"
+        ).pack(side="left", pady=14)
+
+        self.clock_label = tk.Label(
+            header, text="--:--:--", font=("Consolas", 11),
+            fg=TEXT_SECONDARY, bg="#0c1322"
+        )
+        self.clock_label.pack(side="right", padx=16)
+        self.lesson_label = tk.Label(
+            header, text="", font=("Consolas", 10, "bold"),
+            fg=CYAN_ACCENT, bg="#0c1322"
+        )
+        self.lesson_label.pack(side="right", padx=8)
+
+        body = tk.Frame(self.win, bg="#070b14")
+        body.pack(fill="both", expand=True, padx=14, pady=(10, 4))
+
+        # ── Right column: interpretation + code ──
+        right = tk.Frame(body, bg="#070b14", width=520)
+        right.pack(side="right", fill="y", padx=(12, 0))
+        right.pack_propagate(False)
+
+        tk.Label(right, text="HOW TO READ IT", font=("Consolas", 8, "bold"),
+                 fg=TEXT_MUTED, bg="#070b14").pack(anchor="w")
+        self.read_text = tk.Text(
+            right, bg=BI_PANEL_BG, fg=TEXT_PRIMARY, height=15, width=52,
+            font=("Segoe UI", 9), relief="flat", bd=0, wrap="word",
+            padx=12, pady=10, highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=BORDER,
+            spacing1=2, spacing3=6, cursor="arrow",
+        )
+        self.read_text.pack(fill="both", expand=True, pady=(3, 8))
+        self.read_text.tag_configure("bullet", foreground=CYAN_ACCENT,
+                                     font=("Segoe UI", 9, "bold"))
+        self.read_text.tag_configure("rule", foreground=TEXT_PRIMARY)
+        self.read_text.tag_configure("warn", foreground=ORANGE_ACCENT,
+                                     font=("Segoe UI", 9, "italic"))
+        self.read_text.config(state="disabled")
+
+        self.code_lang_label = tk.Label(
+            right, text="CODE", font=("Consolas", 8, "bold"),
+            fg=TEXT_MUTED, bg="#070b14", anchor="w"
+        )
+        self.code_lang_label.pack(anchor="w")
+        code_wrap = tk.Frame(right, bg="#070b14")
+        code_wrap.pack(fill="both", expand=True, pady=(3, 0))
+        code_scroll = tk.Scrollbar(code_wrap, orient="horizontal")
+        code_scroll.pack(side="bottom", fill="x")
+        self.code_text = tk.Text(
+            code_wrap, bg=BI_PLOT_BG, fg="#c8d4e8", height=18, width=52,
+            font=("Consolas", 8), relief="flat", bd=0, wrap="none",
+            padx=12, pady=10, highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=BORDER,
+            cursor="arrow", xscrollcommand=code_scroll.set,
+        )
+        self.code_text.pack(side="top", fill="both", expand=True)
+        code_scroll.config(command=self.code_text.xview)
+        self.code_text.tag_configure("comment", foreground=TEXT_MUTED)
+        self.code_text.tag_configure("kw", foreground=MAGENTA_ACCENT)
+        self.code_text.tag_configure("str", foreground=ACCENT)
+        self.code_text.tag_configure("num", foreground=ORANGE_ACCENT)
+        self.code_text.config(state="disabled")
+
+        # ── Left column: chart stage ──
+        left = tk.Frame(body, bg="#070b14")
+        left.pack(side="left", fill="both", expand=True)
+
+        title_row = tk.Frame(left, bg="#070b14")
+        title_row.pack(fill="x")
+        self.chart_title = tk.Label(
+            title_row, text="", font=("Segoe UI", 17, "bold"),
+            fg=TEXT_PRIMARY, bg="#070b14", anchor="w"
+        )
+        self.chart_title.pack(side="left")
+        self.family_badge = tk.Label(
+            title_row, text="", font=("Consolas", 8, "bold"),
+            fg=BG_DARK, bg=BLUE_ACCENT, padx=8, pady=2
+        )
+        self.family_badge.pack(side="left", padx=12, pady=6)
+
+        self.question_label = tk.Label(
+            left, text="", font=("Segoe UI", 10, "italic"),
+            fg=TEXT_SECONDARY, bg="#070b14", anchor="w"
+        )
+        self.question_label.pack(fill="x", pady=(0, 6))
+
+        self.canvas = tk.Canvas(
+            left, bg=BI_PLOT_BG, highlightthickness=1,
+            highlightbackground=BORDER, height=430
+        )
+        self.canvas.pack(fill="both", expand=True)
+
+        self.pitfall_label = tk.Label(
+            left, text="", font=("Segoe UI", 9), fg=ORANGE_ACCENT,
+            bg="#0f1524", anchor="w", justify="left", wraplength=700,
+            padx=10, pady=7
+        )
+        self.pitfall_label.pack(fill="x", pady=(8, 0))
+
+        tk.Label(left, text="INSIGHT FEED", font=("Consolas", 8, "bold"),
+                 fg=TEXT_MUTED, bg="#070b14").pack(anchor="w", pady=(8, 2))
+        self.feed = scrolledtext.ScrolledText(
+            left, bg=BI_PLOT_BG, fg=TEXT_SECONDARY, height=7, wrap="word",
+            font=("Consolas", 9), relief="flat", bd=0,
+            highlightthickness=1, highlightbackground=BORDER,
+            highlightcolor=BORDER,
+        )
+        self.feed.pack(fill="x")
+        self.feed.tag_configure("takeaway", foreground=ACCENT)
+        self.feed.tag_configure("chatter", foreground=TEXT_MUTED)
+        self.feed.tag_configure("head", foreground=BLUE_ACCENT)
+
+        # ── Footer: lesson progress + transport controls ──
+        self.progress = ttk.Progressbar(
+            self.win, mode="determinate", style="BI.Horizontal.TProgressbar"
+        )
+        self.progress.pack(fill="x", padx=14, pady=(8, 0))
+
+        bar = tk.Frame(self.win, bg="#0c1322", height=44)
+        bar.pack(fill="x", pady=(8, 0))
+        bar.pack_propagate(False)
+        for text, cmd in (("◀  PREV", self._prev), ("NEXT  ▶", self._next)):
+            tk.Button(
+                bar, text=text, bg="#132038", fg=TEXT_PRIMARY,
+                font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+                padx=14, pady=4, cursor="hand2", command=cmd,
+                activebackground="#1b2c4c", activeforeground=TEXT_PRIMARY
+            ).pack(side="left", padx=(16, 6) if "PREV" in text else 6, pady=8)
+        self.pause_btn = tk.Button(
+            bar, text="| |  PAUSE", bg="#132038", fg=YELLOW_ACCENT,
+            font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+            padx=14, pady=4, cursor="hand2", command=self._toggle_pause,
+            activebackground="#1b2c4c", activeforeground=YELLOW_ACCENT
+        )
+        self.pause_btn.pack(side="left", padx=6, pady=8)
+        tk.Label(
+            bar, text="← / → change lesson  •  SPACE pauses  •  ESC exits",
+            font=("Segoe UI", 8), fg=TEXT_MUTED, bg="#0c1322"
+        ).pack(side="left", padx=14)
+        tk.Button(
+            bar, text="STOP & EXIT", bg="#2a1525", fg=RED_ACCENT,
+            font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+            padx=16, pady=4, cursor="hand2", command=self._exit,
+            activebackground="#3a1c30", activeforeground=RED_ACCENT
+        ).pack(side="right", padx=16, pady=8)
+
+    # ── Lesson lifecycle ───────────────────────────────────────
+
+    def _load_lesson(self, index):
+        """Swap in a lesson: new data, fresh panels, restart the reveal."""
+        self.index = index % len(BI_LESSONS)
+        self.generation += 1
+        self.lesson_t0 = time.time()
+        lesson = BI_LESSONS[self.index]
+        self.data = self._make_data(lesson["chart"])
+
+        self.chart_title.config(text=lesson["title"])
+        self.family_badge.config(text=lesson["family"], bg=self._accent())
+        self.question_label.config(text=lesson["question"])
+        self.pitfall_label.config(text="⚠  " + lesson["pitfall"])
+        self.code_lang_label.config(text="CODE  —  " + lesson["lang"].upper())
+
+        for widget in (self.read_text, self.code_text):
+            widget.config(state="normal")
+            widget.delete("1.0", "end")
+            widget.config(state="disabled")
+
+        self._feed(f"▶ LESSON {self.index + 1}/{len(BI_LESSONS)}  —  "
+                   f"{lesson['title']}  ({lesson['family'].lower()})", "head")
+        self._reveal_rule(0, self.generation)
+        self._type_code(0, self.generation)
+
+    def _accent(self):
+        return BI_PALETTE[self.index % len(BI_PALETTE)]
+
+    def _reveal_rule(self, i, gen):
+        """Reveal the interpretation rules one at a time, then the pitfall."""
+        if not self.running or gen != self.generation:
+            return
+        lesson = BI_LESSONS[self.index]
+        rules = lesson["read"]
+        try:
+            self.read_text.config(state="normal")
+            if i < len(rules):
+                self.read_text.insert("end", f"{i + 1}.  ", "bullet")
+                self.read_text.insert("end", rules[i] + "\n", "rule")
+            else:
+                self.read_text.insert("end", "\n⚠  " + lesson["pitfall"] + "\n", "warn")
+            self.read_text.see("end")
+            self.read_text.config(state="disabled")
+        except tk.TclError:
+            return
+        if i < len(rules):
+            self.win.after(self.RULE_MS, lambda: self._reveal_rule(i + 1, gen))
+
+    def _type_code(self, i, gen):
+        """Type the lesson's code out line by line, lightly highlighted."""
+        if not self.running or gen != self.generation:
+            return
+        lines = BI_LESSONS[self.index]["code"].split("\n")
+        if i >= len(lines):
+            return
+        try:
+            self.code_text.config(state="normal")
+            self._insert_code_line(lines[i])
+            self.code_text.see("end")
+            self.code_text.config(state="disabled")
+        except tk.TclError:
+            return
+        self.win.after(self.CODE_MS, lambda: self._type_code(i + 1, gen))
+
+    CODE_KEYWORDS = {
+        "SELECT", "FROM", "WHERE", "GROUP", "ORDER", "BY", "JOIN", "LEFT", "ON",
+        "WITH", "AS", "AND", "CASE", "WHEN", "THEN", "ELSE", "END", "HAVING",
+        "COUNT", "SUM", "AVG", "MIN", "MAX", "DISTINCT", "INTERVAL", "NULLIF",
+        "BETWEEN", "VAR", "RETURN", "CALCULATE", "DIVIDE", "SWITCH", "TRUE",
+        "IF", "let", "in", "each", "import", "for", "print", "def", "return",
+        "not", "None",
+    }
+
+    def _insert_code_line(self, line):
+        """Insert one code line, tagging comments, keywords, strings, numbers."""
+        stripped = line.lstrip()
+        if stripped.startswith("--") or stripped.startswith("#") or stripped.startswith("//"):
+            self.code_text.insert("end", line + "\n", "comment")
+            return
+        pos = 0
+        for match in re.finditer(r'"[^"]*"|\'[^\']*\'|\b\w+\b', line):
+            if match.start() > pos:
+                self.code_text.insert("end", line[pos:match.start()])
+            token = match.group(0)
+            if token[:1] in ('"', "'"):
+                tag = "str"
+            elif token in self.CODE_KEYWORDS:
+                tag = "kw"
+            elif token[:1].isdigit():
+                tag = "num"
+            else:
+                tag = None
+            self.code_text.insert("end", token, tag or ())
+            pos = match.end()
+        self.code_text.insert("end", line[pos:] + "\n")
+
+    def _feed(self, msg, tag="chatter"):
+        try:
+            stamp = datetime.now().strftime("%H:%M:%S")
+            self.feed.insert("end", f"[{stamp}] {msg}\n", tag)
+            # Keep the buffer bounded — this runs for hours.
+            if int(self.feed.index("end-1c").split(".")[0]) > 400:
+                self.feed.delete("1.0", "120.0")
+            self.feed.see("end")
+        except tk.TclError:
+            pass
+
+    def _feed_loop(self):
+        """Stream analyst commentary: lesson takeaways mixed with chatter."""
+        if not self.running:
+            return
+        if not self.paused:
+            lesson = BI_LESSONS[self.index]
+            if random.random() < 0.55:
+                self._feed("   " + random.choice(lesson["insights"]), "takeaway")
+            else:
+                self._feed("   " + random.choice(BI_FEED_CHATTER), "chatter")
+        try:
+            self.win.after(int(random.uniform(1800, 3400)), self._feed_loop)
+        except tk.TclError:
+            pass
+
+    def _next(self):
+        self._load_lesson(self.index + 1)
+
+    def _prev(self):
+        self._load_lesson(self.index - 1)
+
+    def _toggle_pause(self):
+        self.paused = not self.paused
+        if self.paused:
+            self.pause_started = time.time()
+            self.pause_btn.config(text="▶  RESUME", fg=ACCENT,
+                                  activeforeground=ACCENT)
+            self._feed("   paused — lesson timer held", "chatter")
+        else:
+            delta = time.time() - self.pause_started
+            self.paused_total += delta
+            self.lesson_t0 += delta
+            self.pause_btn.config(text="| |  PAUSE", fg=YELLOW_ACCENT,
+                                  activeforeground=YELLOW_ACCENT)
+            self._feed("   resumed", "chatter")
+
+    # ── Main loop ──────────────────────────────────────────────
+
+    def _tick(self):
+        if not self.running or not self.win.winfo_exists():
+            return
+
+        now = time.time()
+        if self.paused:
+            elapsed = self.pause_started - self.start_time - self.paused_total
+        else:
+            elapsed = now - self.start_time - self.paused_total
+        remaining = max(0, self.duration - elapsed)
+
+        if remaining <= 0:
+            self._feed("✅ Session complete — deck exhausted, trainer closing.", "takeaway")
+            _post(self.win, self._exit, 2500)
+            return
+
+        try:
+            self.clock_label.config(
+                text="remaining  " + str(timedelta(seconds=int(remaining))))
+            self.lesson_label.config(
+                text=f"LESSON {self.index + 1:02d}/{len(BI_LESSONS):02d}")
+            ref = self.pause_started if self.paused else now
+            lesson_elapsed = ref - self.lesson_t0
+            self.progress.configure(
+                value=min(100.0, lesson_elapsed / self.LESSON_SECONDS * 100))
+            self._render(min(1.0, lesson_elapsed / self.ENTRANCE_SECONDS))
+            if lesson_elapsed >= self.LESSON_SECONDS:
+                self._next()
+        except tk.TclError:
+            return
+
+        self.win.after(self.FRAME_MS, self._tick)
+
+    # ── Data generation ────────────────────────────────────────
+
+    def _make_data(self, chart):
+        """Generate plausible-looking data for the current chart type."""
+        if chart == "bar":
+            labels = ["EMEA", "AMER", "APAC", "LATAM", "MEA", "ANZ"]
+            vals = sorted((random.uniform(28, 100) for _ in labels), reverse=True)
+            return {"labels": labels, "values": vals}
+        if chart == "line":
+            base, series = random.uniform(40, 60), []
+            for i in range(24):
+                base += random.uniform(-3.2, 4.4) + math.sin(i / 3.0) * 1.4
+                series.append(max(8, base))
+            return {"series": series}
+        if chart == "stacked_area":
+            names = ["Enterprise", "Mid-Market", "SMB"]
+            stacks = []
+            level = [random.uniform(20, 30) for _ in names]
+            for i in range(16):
+                level = [max(4, v + random.uniform(-2.5, 3.0)) for v in level]
+                stacks.append(list(level))
+            return {"names": names, "stacks": stacks}
+        if chart == "donut":
+            names = ["Subscriptions", "Services", "Hardware", "Support", "Training"]
+            raw = sorted((random.uniform(6, 45) for _ in names), reverse=True)
+            total = sum(raw)
+            return {"names": names, "pcts": [v / total * 100 for v in raw]}
+        if chart == "scatter":
+            pts = []
+            for _ in range(90):
+                x = random.uniform(5, 95)
+                y = x * random.uniform(0.7, 0.95) + random.uniform(-18, 18) + 12
+                pts.append((x, max(2, y)))
+            return {"points": pts, "r": random.uniform(0.62, 0.84)}
+        if chart == "histogram":
+            bins = []
+            for i in range(18):
+                centre = math.exp(-((i - 5.5) ** 2) / 13.0)
+                bins.append(centre * 100 + random.uniform(0, 7) + max(0, 18 - i) * 0.4)
+            return {"bins": bins, "median_bin": 5}
+        if chart == "heatmap":
+            rows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            cells = []
+            for r_i in range(len(rows)):
+                weekday = 1.0 if r_i < 5 else 0.14
+                cells.append([
+                    weekday * (math.exp(-((c - 2.5) ** 2) / 2.6) * 1.0
+                               + math.exp(-((c - 8.0) ** 2) / 4.5) * 0.55)
+                    + random.uniform(0, 0.07)
+                    for c in range(12)
+                ])
+            return {"rows": rows, "cells": cells, "cols": list(range(8, 20))}
+        if chart == "box":
+            groups = []
+            for name in ["EMEA", "AMER", "APAC", "LATAM"]:
+                med = random.uniform(30, 62)
+                spread = random.uniform(5, 20)
+                groups.append({
+                    "name": name,
+                    "q1": med - spread, "med": med, "q3": med + spread * 0.9,
+                    "lo": med - spread * 2.1, "hi": med + spread * 2.0,
+                    "outliers": [med + spread * random.uniform(2.4, 3.2)
+                                 for _ in range(random.randint(0, 2))],
+                })
+            return {"groups": groups}
+        if chart == "waterfall":
+            start = random.uniform(60, 80)
+            steps = [("Volume", random.uniform(8, 20)),
+                     ("Price", random.uniform(3, 9)),
+                     ("Mix", random.uniform(-7, -2)),
+                     ("Churn", random.uniform(-11, -4)),
+                     ("FX", random.uniform(-3, 3))]
+            return {"start": start, "steps": steps,
+                    "end": start + sum(v for _, v in steps)}
+        if chart == "funnel":
+            names = ["Visited", "Signed up", "Started trial", "Qualified", "Closed won"]
+            counts, n = [], random.uniform(48000, 90000)
+            for _ in names:
+                counts.append(n)
+                n *= random.uniform(0.32, 0.66)
+            return {"names": names, "counts": counts}
+        if chart == "pareto":
+            names = ["Latency", "Auth", "Data sync", "Billing", "UI bug",
+                     "Timeout", "Import", "Other"]
+            vals = sorted((random.uniform(4, 100) for _ in names), reverse=True)
+            total = sum(vals)
+            cum, acc = [], 0.0
+            for v in vals:
+                acc += v
+                cum.append(acc / total * 100)
+            return {"names": names, "values": vals, "cum": cum}
+        if chart == "kpi":
+            specs = [
+                # name, formatter, is-up-good, sample size
+                ("Revenue MTD", lambda: f"${random.uniform(1.2, 4.8):.2f}M", True, 4820),
+                ("Active users", lambda: f"{random.randint(18000, 64000):,}", True, 41902),
+                ("Churn rate", lambda: f"{random.uniform(1.8, 6.4):.1f}%", False, 1180),
+                ("Avg handle time", lambda: f"{random.uniform(3.4, 9.2):.1f}m", False, 26),
+            ]
+            tiles = []
+            for name, fmt, good_up, n in specs:
+                spark, level = [], random.uniform(40, 70)
+                for _ in range(22):
+                    level = max(6, level + random.uniform(-5, 5.6))
+                    spark.append(level)
+                tiles.append({
+                    "name": name, "display": fmt(), "good_up": good_up, "n": n,
+                    "delta": random.uniform(-14, 18), "spark": spark,
+                })
+            return {"tiles": tiles}
+        return {}
+
+    # ── Rendering ──────────────────────────────────────────────
+
+    def _render(self, anim):
+        c = self.canvas
+        c.delete("all")
+        w = c.winfo_width() or 720
+        h = c.winfo_height() or 430
+        if w < 60 or h < 60:
+            return
+        draw = getattr(self, "_draw_" + BI_LESSONS[self.index]["chart"], None)
+        if draw is None:
+            return
+        try:
+            draw(c, w, h, max(0.02, anim))
+        except Exception:
+            # A renderer must never take the trainer down mid-session.
+            pass
+
+    def _frame(self, c, w, h, pad=(64, 26, 30, 46), ticks=5, fmt=None):
+        """Draw the plot frame + horizontal gridlines. Returns the plot box."""
+        x0, y0 = pad[0], pad[1]
+        x1, y1 = w - pad[2], h - pad[3]
+        for i in range(ticks + 1):
+            y = y1 - (y1 - y0) * i / ticks
+            c.create_line(x0, y, x1, y, fill=BI_GRID)
+            if fmt:
+                c.create_text(x0 - 8, y, text=fmt(i / ticks), anchor="e",
+                              fill=TEXT_MUTED, font=("Consolas", 8))
+        c.create_line(x0, y0, x0, y1, fill=BI_AXIS)
+        c.create_line(x0, y1, x1, y1, fill=BI_AXIS)
+        return x0, y0, x1, y1
+
+    def _callout(self, c, x, y, text, color, anchor="w"):
+        """Pulsing annotation marker — the 'the analyst points here' bit."""
+        pulse = 3.5 + math.sin(time.time() * 3.2) * 1.8
+        c.create_oval(x - pulse, y - pulse, x + pulse, y + pulse,
+                      outline=color, width=1)
+        c.create_text(x + (12 if anchor == "w" else -12), y, text=text,
+                      anchor=anchor, fill=color, font=("Consolas", 8, "bold"))
+
+    def _draw_bar(self, c, w, h, anim):
+        d = self.data
+        vals, labels = d["values"], d["labels"]
+        top = max(vals) * 1.15
+        x0, y0, x1, y1 = self._frame(c, w, h, fmt=lambda t: f"{top * t:,.0f}k")
+        n = len(vals)
+        slot = (x1 - x0) / n
+        for i, v in enumerate(vals):
+            bh = (v / top) * (y1 - y0) * anim
+            bx = x0 + slot * i + slot * 0.18
+            bw = slot * 0.64
+            color = self._accent() if i == 0 else _bi_mix(self._accent(), BI_PLOT_BG, 0.45)
+            c.create_rectangle(bx, y1 - bh, bx + bw, y1, fill=color, outline="")
+            c.create_text(bx + bw / 2, y1 + 14, text=labels[i], anchor="n",
+                          fill=TEXT_SECONDARY, font=("Consolas", 8))
+            if anim > 0.85:
+                c.create_text(bx + bw / 2, y1 - bh - 9, text=f"{v:,.0f}k",
+                              fill=TEXT_PRIMARY, font=("Consolas", 8))
+        if anim > 0.9:
+            median = sorted(vals)[n // 2]
+            my = y1 - (median / top) * (y1 - y0)
+            c.create_line(x0, my, x1, my, fill=YELLOW_ACCENT, dash=(4, 3))
+            c.create_text(x1 - 4, my - 9, text=f"median {median:,.0f}k", anchor="e",
+                          fill=YELLOW_ACCENT, font=("Consolas", 8))
+            self._callout(c, x0 + slot * 0.82,
+                          y1 - (vals[0] / top) * (y1 - y0) - 24,
+                          "top performer", self._accent())
+
+    def _draw_line(self, c, w, h, anim):
+        s = self.data["series"]
+        top, low = max(s) * 1.12, min(s) * 0.85
+        rng = top - low or 1
+        x0, y0, x1, y1 = self._frame(c, w, h, fmt=lambda t: f"{low + rng * t:,.0f}")
+        shown = max(2, int(len(s) * anim))
+        pts = []
+        for i in range(shown):
+            x = x0 + (x1 - x0) * i / (len(s) - 1)
+            y = y1 - ((s[i] - low) / rng) * (y1 - y0)
+            pts.extend([x, y])
+        if len(pts) >= 4:
+            c.create_line(*pts, fill=self._accent(), width=2, smooth=True)
+        # 7-point moving average — the "what is the actual direction" line
+        ma = []
+        for i in range(shown):
+            window = s[max(0, i - 6):i + 1]
+            avg = sum(window) / len(window)
+            ma.extend([x0 + (x1 - x0) * i / (len(s) - 1),
+                       y1 - ((avg - low) / rng) * (y1 - y0)])
+        if len(ma) >= 4:
+            c.create_line(*ma, fill=CYAN_ACCENT, width=2, dash=(5, 3), smooth=True)
+        c.create_text(x0 + 8, y0 + 10, text="— actual    - - 7-pt moving average",
+                      anchor="w", fill=TEXT_MUTED, font=("Consolas", 8))
+        for lbl, frac in (("Q1", 0.0), ("Q2", 0.25), ("Q3", 0.5), ("Q4", 0.75)):
+            c.create_text(x0 + (x1 - x0) * frac + 6, y1 + 12, text=lbl, anchor="w",
+                          fill=TEXT_MUTED, font=("Consolas", 8))
+        if anim >= 1.0 and len(pts) >= 4:
+            self._callout(c, pts[-2], pts[-1], "read the slope, not the last dot",
+                          self._accent(), anchor="e")
+
+    def _draw_stacked_area(self, c, w, h, anim):
+        d = self.data
+        stacks, names = d["stacks"], d["names"]
+        totals = [sum(row) for row in stacks]
+        top = max(totals) * 1.12
+        x0, y0, x1, y1 = self._frame(c, w, h, fmt=lambda t: f"{top * t:,.0f}k")
+        n = len(stacks)
+        shown = max(2, int(n * anim))
+        bases = [0.0] * shown
+        for si in range(len(names)):
+            poly, back = [], []
+            for i in range(shown):
+                x = x0 + (x1 - x0) * i / (n - 1)
+                lo = bases[i]
+                hi = lo + stacks[i][si]
+                poly.extend([x, y1 - (hi / top) * (y1 - y0)])
+                back.append((x, y1 - (lo / top) * (y1 - y0)))
+                bases[i] = hi
+            for x, y in reversed(back):
+                poly.extend([x, y])
+            if len(poly) >= 6:
+                c.create_polygon(*poly, fill=_bi_mix(BI_PALETTE[si], BI_PLOT_BG, 0.35),
+                                 outline=BI_PALETTE[si], width=1)
+        for si, name in enumerate(names):
+            c.create_rectangle(x0 + 10 + si * 118, y0 + 6, x0 + 20 + si * 118, y0 + 16,
+                               fill=BI_PALETTE[si], outline="")
+            c.create_text(x0 + 25 + si * 118, y0 + 11, text=name, anchor="w",
+                          fill=TEXT_SECONDARY, font=("Consolas", 8))
+        c.create_text(x1 - 6, y1 + 14, text="top edge = total  •  only the bottom band has a flat baseline",
+                      anchor="e", fill=TEXT_MUTED, font=("Consolas", 8))
+
+    def _draw_donut(self, c, w, h, anim):
+        d = self.data
+        cx, cy = w * 0.36, h * 0.52
+        rad = min(w * 0.24, h * 0.36)
+        inner = rad * 0.56
+        start = 90.0
+        for i, (name, pct) in enumerate(zip(d["names"], d["pcts"])):
+            extent = -pct * 3.6 * anim
+            color = BI_PALETTE[i % len(BI_PALETTE)]
+            c.create_arc(cx - rad, cy - rad, cx + rad, cy + rad,
+                         start=start, extent=extent, style="pieslice",
+                         fill=color, outline=BI_PLOT_BG, width=2)
+            mid = math.radians(start + extent / 2)
+            lx = cx + math.cos(mid) * (rad * 0.78)
+            ly = cy - math.sin(mid) * (rad * 0.78)
+            if anim > 0.8 and pct > 4:
+                c.create_text(lx, ly, text=f"{pct:.0f}%", fill="#06101c",
+                              font=("Consolas", 9, "bold"))
+            start += extent
+        c.create_oval(cx - inner, cy - inner, cx + inner, cy + inner,
+                      fill=BI_PLOT_BG, outline="")
+        c.create_text(cx, cy - 10, text="TOTAL", fill=TEXT_MUTED, font=("Consolas", 8))
+        c.create_text(cx, cy + 10, text="$4.82M", fill=TEXT_PRIMARY,
+                      font=("Consolas", 15, "bold"))
+        lx = w * 0.68
+        c.create_text(lx, h * 0.22, text="ONE total  •  ONE moment",
+                      anchor="w", fill=TEXT_MUTED, font=("Consolas", 8))
+        for i, (name, pct) in enumerate(zip(d["names"], d["pcts"])):
+            y = h * 0.30 + i * 26
+            c.create_rectangle(lx, y, lx + 12, y + 12,
+                               fill=BI_PALETTE[i % len(BI_PALETTE)], outline="")
+            c.create_text(lx + 20, y + 6, text=f"{name}", anchor="w",
+                          fill=TEXT_SECONDARY, font=("Consolas", 9))
+            c.create_text(lx + 200, y + 6, text=f"{pct:5.1f}%", anchor="e",
+                          fill=TEXT_PRIMARY, font=("Consolas", 9, "bold"))
+
+    def _draw_scatter(self, c, w, h, anim):
+        d = self.data
+        pts = d["points"]
+        x0, y0, x1, y1 = self._frame(c, w, h, fmt=lambda t: f"{t * 120:,.0f}k")
+        shown = int(len(pts) * anim)
+        for px, py in pts[:shown]:
+            x = x0 + (x1 - x0) * px / 100.0
+            y = y1 - (y1 - y0) * py / 120.0
+            c.create_oval(x - 3, y - 3, x + 3, y + 3,
+                          fill=_bi_mix(self._accent(), BI_PLOT_BG, 0.25),
+                          outline=self._accent())
+        if anim > 0.6:
+            # Least-squares fit over what is on screen
+            xs = [p[0] for p in pts[:shown]]
+            ys = [p[1] for p in pts[:shown]]
+            n = len(xs) or 1
+            mx, my = sum(xs) / n, sum(ys) / n
+            denom = sum((x - mx) ** 2 for x in xs) or 1
+            slope = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / denom
+            fy = lambda vx: my + slope * (vx - mx)
+            c.create_line(x0 + (x1 - x0) * 0.02, y1 - (y1 - y0) * fy(2) / 120.0,
+                          x0 + (x1 - x0) * 0.98, y1 - (y1 - y0) * fy(98) / 120.0,
+                          fill=YELLOW_ACCENT, width=2, dash=(6, 4))
+            c.create_text(x1 - 8, y0 + 12,
+                          text=f"r = +{d['r']:.2f}   n = {len(pts)}   p < 0.001",
+                          anchor="e", fill=YELLOW_ACCENT, font=("Consolas", 9, "bold"))
+            c.create_text(x1 - 8, y0 + 28, text="correlation ≠ causation",
+                          anchor="e", fill=TEXT_MUTED, font=("Consolas", 8))
+        c.create_text((x0 + x1) / 2, y1 + 26, text="ad spend  →",
+                      fill=TEXT_MUTED, font=("Consolas", 8))
+
+    def _draw_histogram(self, c, w, h, anim):
+        bins = self.data["bins"]
+        top = max(bins) * 1.15
+        x0, y0, x1, y1 = self._frame(c, w, h, fmt=lambda t: f"{top * t:,.0f}")
+        slot = (x1 - x0) / len(bins)
+        for i, v in enumerate(bins):
+            bh = (v / top) * (y1 - y0) * anim
+            bx = x0 + slot * i
+            c.create_rectangle(bx, y1 - bh, bx + slot - 1, y1,
+                               fill=_bi_mix(self._accent(), BI_PLOT_BG, 0.3),
+                               outline=self._accent())
+        if anim > 0.85:
+            med_x = x0 + slot * (self.data["median_bin"] + 0.5)
+            mean_x = med_x + slot * 2.4
+            for x, label, color in ((med_x, "median", ACCENT),
+                                    (mean_x, "mean", ORANGE_ACCENT)):
+                c.create_line(x, y0, x, y1, fill=color, dash=(4, 3))
+                c.create_text(x + 4, y0 + 10, text=label, anchor="w", fill=color,
+                              font=("Consolas", 8, "bold"))
+            c.create_text(x1 - 8, y0 + 12,
+                          text="right-skewed → mean pulled above median",
+                          anchor="e", fill=TEXT_MUTED, font=("Consolas", 8))
+        c.create_text((x0 + x1) / 2, y1 + 26, text="order value (bins of $25)  →",
+                      fill=TEXT_MUTED, font=("Consolas", 8))
+
+    def _draw_heatmap(self, c, w, h, anim):
+        d = self.data
+        rows, cells, cols = d["rows"], d["cells"], d["cols"]
+        x0, y0 = 62, 34
+        x1, y1 = w - 150, h - 46
+        cw = (x1 - x0) / len(cols)
+        ch = (y1 - y0) / len(rows)
+        peak = max(max(r) for r in cells) or 1
+        for ri, row in enumerate(cells):
+            for ci, v in enumerate(row):
+                if (ri * len(cols) + ci) > len(cols) * len(rows) * anim:
+                    continue
+                t = (v / peak) ** 0.9           # near-linear: quiet stays dark
+                color = _bi_mix("#07101f", self._accent(), t)
+                c.create_rectangle(x0 + ci * cw, y0 + ri * ch,
+                                   x0 + (ci + 1) * cw - 1, y0 + (ri + 1) * ch - 1,
+                                   fill=color, outline="")
+            c.create_text(x0 - 8, y0 + ri * ch + ch / 2, text=rows[ri], anchor="e",
+                          fill=TEXT_SECONDARY, font=("Consolas", 8))
+        for ci, hour in enumerate(cols):
+            c.create_text(x0 + ci * cw + cw / 2, y1 + 12, text=f"{hour:02d}",
+                          fill=TEXT_MUTED, font=("Consolas", 8))
+        # Legend: one hue, varying lightness — never a rainbow
+        lx = w - 128
+        for i in range(60):
+            t = i / 59.0
+            c.create_rectangle(lx, y1 - t * (y1 - y0), lx + 16,
+                               y1 - (t + 0.02) * (y1 - y0),
+                               fill=_bi_mix("#07101f", self._accent(), t ** 0.9),
+                               outline="")
+        c.create_text(lx + 22, y0, text=f"{peak * 1000:,.0f}", anchor="w",
+                      fill=TEXT_MUTED, font=("Consolas", 8))
+        c.create_text(lx + 22, y1, text="0", anchor="w",
+                      fill=TEXT_MUTED, font=("Consolas", 8))
+        c.create_text(lx, y0 - 18, text="unique sessions", anchor="w",
+                      fill=TEXT_MUTED, font=("Consolas", 8))
+        c.create_text(x0, y0 - 18, text="scan for blocks and stripes, not single cells",
+                      anchor="w", fill=TEXT_MUTED, font=("Consolas", 8))
+
+    def _draw_box(self, c, w, h, anim):
+        groups = self.data["groups"]
+        top = max(g["hi"] + 12 for g in groups)
+        x0, y0, x1, y1 = self._frame(c, w, h, fmt=lambda t: f"{top * t:,.0f}d")
+        slot = (x1 - x0) / len(groups)
+        yof = lambda v: y1 - (v / top) * (y1 - y0) * anim
+        for i, g in enumerate(groups):
+            cx = x0 + slot * (i + 0.5)
+            half = slot * 0.22
+            color = BI_PALETTE[i % len(BI_PALETTE)]
+            c.create_line(cx, yof(g["lo"]), cx, yof(g["hi"]), fill=color)
+            for v in (g["lo"], g["hi"]):
+                c.create_line(cx - half * 0.5, yof(v), cx + half * 0.5, yof(v), fill=color)
+            c.create_rectangle(cx - half, yof(g["q3"]), cx + half, yof(g["q1"]),
+                               fill=_bi_mix(color, BI_PLOT_BG, 0.65), outline=color)
+            c.create_line(cx - half, yof(g["med"]), cx + half, yof(g["med"]),
+                          fill=color, width=3)
+            for o in g["outliers"]:
+                oy = yof(o)
+                c.create_oval(cx - 3, oy - 3, cx + 3, oy + 3, outline=RED_ACCENT)
+            c.create_text(cx, y1 + 14, text=g["name"], anchor="n",
+                          fill=TEXT_SECONDARY, font=("Consolas", 8))
+            if anim > 0.9:
+                c.create_text(cx + half + 6, yof(g["med"]), text=f"{g['med']:.0f}",
+                              anchor="w", fill=TEXT_PRIMARY, font=("Consolas", 8))
+        c.create_text(x0 + 8, y0 + 10,
+                      text="box = middle 50% (Q1→Q3)  •  line = median  •  dots = outliers",
+                      anchor="w", fill=TEXT_MUTED, font=("Consolas", 8))
+
+    def _draw_waterfall(self, c, w, h, anim):
+        d = self.data
+        bars = [("Start", d["start"], "total")]
+        for name, delta in d["steps"]:
+            bars.append((name, delta, "delta"))
+        bars.append(("End", d["end"], "total"))
+        top = max(d["start"], d["end"]) * 1.35
+        x0, y0, x1, y1 = self._frame(c, w, h, fmt=lambda t: f"{top * t:,.0f}k")
+        slot = (x1 - x0) / len(bars)
+        yof = lambda v: y1 - (v / top) * (y1 - y0)
+        running = 0.0
+        prev_x = prev_y = None
+        for i, (name, val, kind) in enumerate(bars):
+            if i > len(bars) * anim:
+                break
+            bx = x0 + slot * i + slot * 0.2
+            bw = slot * 0.6
+            if kind == "total":
+                lo, hi = 0.0, val
+                color = BLUE_ACCENT
+                running = val
+            else:
+                lo, hi = running, running + val
+                color = ACCENT if val >= 0 else RED_ACCENT
+                running = hi
+            c.create_rectangle(bx, yof(max(lo, hi)), bx + bw, yof(min(lo, hi)),
+                               fill=_bi_mix(color, BI_PLOT_BG, 0.35), outline=color)
+            label = f"{val:+,.1f}k" if kind == "delta" else f"{val:,.1f}k"
+            c.create_text(bx + bw / 2, yof(max(lo, hi)) - 9, text=label,
+                          fill=color, font=("Consolas", 8, "bold"))
+            c.create_text(bx + bw / 2, y1 + 14, text=name, anchor="n",
+                          fill=TEXT_SECONDARY, font=("Consolas", 8))
+            if prev_x is not None:
+                c.create_line(prev_x, prev_y, bx, prev_y, fill=BI_AXIS, dash=(2, 2))
+            prev_x, prev_y = bx + bw, yof(running)
+        if anim > 0.95:
+            c.create_text(x1 - 6, y0 + 12,
+                          text="bridge check = 0.00  •  bars reconcile to the end total",
+                          anchor="e", fill=ACCENT, font=("Consolas", 8, "bold"))
+
+    def _draw_funnel(self, c, w, h, anim):
+        d = self.data
+        names, counts = d["names"], d["counts"]
+        x0, y0 = 128, 44
+        x1, y1 = w - 210, h - 40
+        top = counts[0]
+        rowh = (y1 - y0) / len(names)
+        cx = (x0 + x1) / 2
+        worst = 0
+        for i in range(1, len(counts)):
+            if counts[i] / counts[i - 1] < counts[worst + 1] / counts[worst]:
+                worst = i - 1
+        for i, (name, cnt) in enumerate(zip(names, counts)):
+            if i > len(names) * anim:
+                break
+            half = (x1 - x0) / 2 * (cnt / top)
+            ty = y0 + rowh * i
+            by = ty + rowh * 0.72
+            color = BI_PALETTE[i % len(BI_PALETTE)]
+            c.create_rectangle(cx - half, ty, cx + half, by,
+                               fill=_bi_mix(color, BI_PLOT_BG, 0.4), outline=color)
+            mid = (ty + by) / 2
+            c.create_text(x0 - 14, mid, text=name, anchor="e",
+                          fill=TEXT_PRIMARY, font=("Consolas", 9, "bold"))
+            c.create_text(x1 + 16, mid, text=f"{cnt:>9,.0f}", anchor="w",
+                          fill=TEXT_SECONDARY, font=("Consolas", 9))
+            c.create_text(x1 + 16, mid + 14, text=f"{cnt / top * 100:.1f}% of top",
+                          anchor="w", fill=TEXT_MUTED, font=("Consolas", 8))
+            if i:
+                step = cnt / counts[i - 1] * 100
+                worst_gap = (i - 1 == worst)
+                gap_color = RED_ACCENT if worst_gap else TEXT_SECONDARY
+                c.create_text(cx, ty - rowh * 0.14,
+                              text=f"▼ {100 - step:.0f}% lost"
+                                   + ("   ← biggest drop" if worst_gap else ""),
+                              fill=gap_color, font=("Consolas", 8, "bold"))
+        c.create_text(x0 - 14, y0 - 22, text="read the GAPS, not the widths",
+                      anchor="w", fill=TEXT_MUTED, font=("Consolas", 8))
+
+    def _draw_pareto(self, c, w, h, anim):
+        d = self.data
+        vals, names, cum = d["values"], d["names"], d["cum"]
+        top = max(vals) * 1.2
+        x0, y0, x1, y1 = self._frame(c, w, h, pad=(64, 26, 58, 46),
+                                     fmt=lambda t: f"{top * t:,.0f}k")
+        slot = (x1 - x0) / len(vals)
+        for i, v in enumerate(vals):
+            bh = (v / top) * (y1 - y0) * anim
+            bx = x0 + slot * i + slot * 0.15
+            bw = slot * 0.7
+            vital = cum[i] <= 80
+            color = self._accent() if vital else _bi_mix(self._accent(), BI_PLOT_BG, 0.6)
+            c.create_rectangle(bx, y1 - bh, bx + bw, y1, fill=color, outline="")
+            c.create_text(bx + bw / 2, y1 + 14, text=names[i], anchor="n",
+                          fill=TEXT_SECONDARY, font=("Consolas", 7))
+        pts = []
+        for i, cv in enumerate(cum):
+            if i > len(cum) * anim:
+                break
+            pts.extend([x0 + slot * (i + 0.5), y1 - (cv / 100.0) * (y1 - y0)])
+        line_color = CYAN_ACCENT if self._accent() == YELLOW_ACCENT else YELLOW_ACCENT
+        if len(pts) >= 4:
+            c.create_line(*pts, fill=line_color, width=2)
+            for i in range(0, len(pts), 2):
+                c.create_oval(pts[i] - 3, pts[i + 1] - 3, pts[i] + 3, pts[i + 1] + 3,
+                              fill=line_color, outline="")
+            c.create_text(x0 + 10, y0 + 26, text="— cumulative % of cost (right axis)",
+                          anchor="w", fill=line_color, font=("Consolas", 8))
+        y80 = y1 - 0.8 * (y1 - y0)
+        c.create_line(x0, y80, x1, y80, fill=RED_ACCENT, dash=(5, 3))
+        c.create_text(x1 + 6, y80, text="80%", anchor="w", fill=RED_ACCENT,
+                      font=("Consolas", 8, "bold"))
+        for i in range(6):
+            yy = y1 - (y1 - y0) * i / 5
+            c.create_text(x1 + 6, yy, text=f"{i * 20}%", anchor="w",
+                          fill=TEXT_MUTED, font=("Consolas", 7))
+        vital_n = sum(1 for cv in cum if cv <= 80)
+        if anim > 0.9:
+            c.create_text(x0 + 10, y0 + 10,
+                          text=f"{vital_n} of {len(vals)} causes carry ~80% of the cost",
+                          anchor="w", fill=ACCENT, font=("Consolas", 9, "bold"))
+
+    def _draw_kpi(self, c, w, h, anim):
+        tiles = self.data["tiles"]
+        pad = 16
+        tw = (w - pad * (len(tiles) + 1)) / len(tiles)
+        th = h * 0.54
+        ty = h * 0.10
+        for i, t in enumerate(tiles):
+            if i > len(tiles) * anim * 1.2:
+                break
+            tx = pad + i * (tw + pad)
+            good = (t["delta"] >= 0) == t["good_up"]
+            color = ACCENT if good else RED_ACCENT
+            c.create_rectangle(tx, ty, tx + tw, ty + th, fill=BI_PANEL_BG,
+                               outline=BORDER)
+            c.create_text(tx + 14, ty + 16, text=t["name"].upper(), anchor="w",
+                          fill=TEXT_MUTED, font=("Consolas", 8))
+            c.create_text(tx + 14, ty + 46, text=t["display"], anchor="w",
+                          fill=TEXT_PRIMARY, font=("Consolas", 19, "bold"))
+            arrow = "▲" if t["delta"] >= 0 else "▼"
+            c.create_text(tx + 14, ty + 72,
+                          text=f"{arrow} {abs(t['delta']):.1f}%  vs LY",
+                          anchor="w", fill=color, font=("Consolas", 9, "bold"))
+            # n on the tile: a delta with no sample size is not evidence.
+            n_color = TEXT_MUTED if t["n"] >= 30 else ORANGE_ACCENT
+            c.create_text(tx + 14, ty + 90,
+                          text=f"n = {t['n']:,}" + ("" if t["n"] >= 30 else "  (n too low)"),
+                          anchor="w", fill=n_color, font=("Consolas", 8))
+            c.create_text(tx + 14, ty + 108, text="target  ≥ +5.0% YoY", anchor="w",
+                          fill=TEXT_MUTED, font=("Consolas", 8))
+            # Sparkline: the context the big number destroys
+            sx0, sy0 = tx + 14, ty + th - 52
+            sx1, sy1 = tx + tw - 14, ty + th - 12
+            spark = t["spark"]
+            hi, lo = max(spark), min(spark)
+            rng = (hi - lo) or 1
+            pts = []
+            for j, v in enumerate(spark):
+                pts.extend([sx0 + (sx1 - sx0) * j / (len(spark) - 1),
+                            sy1 - ((v - lo) / rng) * (sy1 - sy0)])
+            if len(pts) >= 4:
+                c.create_line(*pts, fill=color, width=1, smooth=True)
+                c.create_oval(pts[-2] - 3, pts[-1] - 3, pts[-2] + 3, pts[-1] + 3,
+                              fill=color, outline="")
+            c.create_text(sx0, ty + th - 62, text="trailing 22 periods", anchor="w",
+                          fill=TEXT_MUTED, font=("Consolas", 7))
+        c.create_text(w / 2, ty + th + 34,
+                      text="a number with no comparison is not a KPI — it is trivia",
+                      fill=TEXT_SECONDARY, font=("Segoe UI", 10, "italic"))
+        c.create_text(w / 2, ty + th + 58,
+                      text="colour follows DIRECTION OF GOODNESS: falling churn is green",
+                      fill=TEXT_MUTED, font=("Consolas", 8))
+
+    # ── Teardown ───────────────────────────────────────────────
+
+    def _exit(self):
+        if not self.running:
+            return
+        self.running = False
+        keep_alive.stop()
+        self.win.destroy()
+        self.on_exit()
+
+
+# ═══════════════════════════════════════════════════════════════
 # DOCUMENTATION VIEWER
 # ═══════════════════════════════════════════════════════════════
 
@@ -1747,6 +3375,8 @@ happen for a threshold period (usually 3-5 minutes), you go "Away".
 WorkFacade prevents this with a background KeepAliveEngine that:
   \u2022 Moves the mouse by 1 pixel and back (and the occasional 1-notch scroll)
   \u2022 Sends a harmless key press (Shift / Ctrl / F13-F15, rotated)
+    Keys the OS keymap cannot produce are dropped at startup — on Linux,
+    F13-F15 are usually unmapped, and pressing them stops injection dead
   \u2022 Adds \u00b125% random jitter to every interval so it never looks robotic
   \u2022 Runs on a daemon thread so it doesn't block the UI
   \u2022 Uses thread-safe signaling (threading.Event) for start/stop
@@ -1881,15 +3511,35 @@ KEEP-ALIVE INTENSITY PROFILES (selectable from the launcher):
   running." Eye-catching enough that people leave it (and you) alone.
 
 
+\u2590 THE BI TRAINER (BI Chart & Insight Clinic)
+  A scrolling business-intelligence masterclass. Cycles through 12
+  chart types, drawing a live example of each:
+  \u2022 Column, line, stacked area, donut, scatter, histogram, heatmap,
+    box & whisker, waterfall, funnel, Pareto, and KPI tiles
+  \u2022 A "how to read it" panel that reveals the interpretation rules
+    one at a time, ending on the classic misreading to avoid
+  \u2022 The SQL / DAX / pandas / Power Query code behind each chart,
+    typed out line by line with syntax highlighting
+  \u2022 A scrolling insight feed of analyst commentary
+  \u2022 Auto-advances every 18 seconds; \u2190 / \u2192 change lesson,
+    SPACE pauses, ESC or Stop & Exit leaves
+
+  Why it works: It reads as focused analysis work \u2014 and unlike the
+  other modes, the content on screen is genuinely worth reading.
+
+
 \u2501\u2501\u2501  LAUNCHER FEATURES  \u2501\u2501\u2501
 
   \u2022 Glassmorphic card-based UI with dark theme
   \u2022 Flicker-free hover effects on simulation cards
   \u2022 Duration input in HOURS or MINUTES (validated)
   \u2022 Keep-alive intensity selector (Stealth / Normal / Aggressive)
-  \u2022 "\ud83c\udfb2 Surprise Me" button launches a random simulation
+  \u2022 "\U0001f3b2 Surprise Me" button launches a random simulation
   \u2022 Universal ESC panic-exit on every simulation window
   \u2022 Simulation registry pattern for clean extensibility
+  \u2022 Full keyboard control: Tab moves between cards, Return or Space
+    launches the focused one, and focus scrolls it into view
+  \u2022 Card grid scrolls when the screen is too short for every row
   \u2022 Auto-center on screen, non-resizable
 
 
@@ -1976,6 +3626,8 @@ class DocumentationViewer:
         self.text.config(state="disabled")
 
     def _exit(self):
+        if not self.win.winfo_exists():
+            return                      # already closed (ESC then Close, etc.)
         self.win.destroy()
         self.on_exit()
 
@@ -1995,6 +3647,7 @@ class Launcher:
         self.root.resizable(False, False)
 
         self.active_sim = None
+        self._status_after = None
         self.duration_var = tk.IntVar(value=2)
         self.unit_var = tk.StringVar(value="hours")
         self.intensity_var = tk.StringVar(value=DEFAULT_PROFILE)
@@ -2143,39 +3796,85 @@ class Launcher:
             text=self._intensity_hint_text(),
             font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
         )
-        self.intensity_hint.pack(pady=(0, 12))
+        self.intensity_hint.pack(pady=(0, 2))
 
-        # ── Card Grid ──
-        grid_frame = tk.Frame(self.root, bg=BG_DARK)
-        grid_frame.pack(fill="both", expand=True, padx=30, pady=(0, 25))
-
-        self.cards = []
-        for i, sim in enumerate(SIMULATIONS):
-            row, col = divmod(i, 3)
-            card = self._create_card(grid_frame, sim)
-            card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
-            self.cards.append(card)
-
-        for c in range(3):
-            grid_frame.columnconfigure(c, weight=1)
-        num_rows = (len(SIMULATIONS) + 2) // 3
-        for r in range(num_rows):
-            grid_frame.rowconfigure(r, weight=1)
+        # Empty until a launch fails; keeps its row so nothing jumps when shown.
+        self.status_label = tk.Label(
+            self.root, text="", font=("Segoe UI", 9, "bold"),
+            fg=RED_ACCENT, bg=BG_DARK
+        )
+        self.status_label.pack(pady=(0, 8))
 
         # ── Footer ──
+        # Packed before the card grid, and to the bottom, so pack gives it its
+        # strip first. Otherwise, on a screen too short for the whole grid, the
+        # footer is the piece that falls off the edge.
         footer = tk.Frame(self.root, bg=BG_DARK, height=30)
-        footer.pack(fill="x")
+        footer.pack(side="bottom", fill="x")
         tk.Label(
             footer,
             text="ESC exits any simulation  \u2022  pyautogui failsafe: move mouse to (0,0)  \u2022  Educational project",
             font=("Segoe UI", 8), fg=TEXT_MUTED, bg=BG_DARK
         ).pack(pady=5)
 
-    def _create_card(self, parent, sim):
+        # ── Card Grid ──
+        # The window is non-resizable and clamped to the display, so on a short
+        # screen (1366x768 and friends) the last row of cards used to be cut off
+        # the bottom with no way to reach it. Hosting the grid in a canvas lets
+        # those rows scroll into view instead of disappearing.
+        grid_host = tk.Frame(self.root, bg=BG_DARK)
+        grid_host.pack(fill="both", expand=True, padx=30, pady=(0, 25))
+
+        self.grid_canvas = tk.Canvas(grid_host, bg=BG_DARK, highlightthickness=0, bd=0)
+        self.grid_scroll = tk.Scrollbar(grid_host, orient="vertical",
+                                        command=self.grid_canvas.yview)
+        self.grid_canvas.configure(yscrollcommand=self.grid_scroll.set)
+        self.grid_scroll.pack(side="right", fill="y")
+        self.grid_canvas.pack(side="left", fill="both", expand=True)
+
+        grid_frame = tk.Frame(self.grid_canvas, bg=BG_DARK)
+        self._grid_window = self.grid_canvas.create_window(
+            (0, 0), window=grid_frame, anchor="nw")
+
+        # Widen the grid rather than adding a fourth row: three rows of cards
+        # plus the header is about as tall as a 1080p screen can show.
+        cols = 3 if len(SIMULATIONS) <= 9 else 4
+        wrap = 240 if cols == 3 else 195
+
+        self.cards = []
+        for i, sim in enumerate(SIMULATIONS):
+            row, col = divmod(i, cols)
+            card = self._create_card(grid_frame, sim, wraplength=wrap)
+            card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+            self.cards.append(card)
+
+        for c in range(cols):
+            grid_frame.columnconfigure(c, weight=1)
+        num_rows = (len(SIMULATIONS) + cols - 1) // cols
+        for r in range(num_rows):
+            grid_frame.rowconfigure(r, weight=1)
+
+        # Ask for the grid's natural size so the window still sizes itself to
+        # fit the cards when the screen is big enough to show them all, plus
+        # room for the scrollbar. Without that reservation the scrollbar eats
+        # ~13px of card width the moment it appears, and the cards shrink
+        # below their requested size — clipping the last letters of the
+        # longest titles.
+        self.grid_inner = grid_frame
+        grid_frame.update_idletasks()
+        self.grid_canvas.configure(
+            width=grid_frame.winfo_reqwidth() + self.grid_scroll.winfo_reqwidth(),
+            height=grid_frame.winfo_reqheight())
+        self.grid_canvas.bind("<Configure>", self._on_grid_resize)
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.bind_all(seq, self._on_grid_scroll)
+
+    def _create_card(self, parent, sim, wraplength=240):
         """Create a glassmorphic simulation card."""
         card = tk.Frame(
             parent, bg=BG_CARD, highlightbackground=BORDER,
-            highlightthickness=1, cursor="hand2"
+            highlightthickness=1, cursor="hand2",
+            takefocus=1, highlightcolor=sim["color"]
         )
         card.columnconfigure(0, weight=1)
 
@@ -2210,7 +3909,7 @@ class Launcher:
         desc_label = tk.Label(
             inner, text=sim["desc"],
             font=("Segoe UI", 8), fg=TEXT_DESC, bg=BG_CARD,
-            anchor="w", justify="left", wraplength=240
+            anchor="w", justify="left", wraplength=wraplength
         )
         desc_label.pack(anchor="w", pady=(8, 0))
 
@@ -2218,20 +3917,76 @@ class Launcher:
         all_widgets = [card, inner, icon_label, title_label, sub_label, desc_label]
         card._hover_widgets = all_widgets
         card._hover_active = False
+        card._focus_active = False
         for widget in all_widgets:
             widget.bind("<Enter>", lambda e, c=card, s=sim:
                 self._on_card_enter(c, s))
             widget.bind("<Leave>", lambda e, c=card, s=sim:
                 self._on_card_leave(c, s))
-            widget.bind("<Button-1>", lambda e, s=sim: self._launch(s["id"]))
+            widget.bind("<Button-1>", lambda e, c=card, s=sim:
+                (c.focus_set(), self._launch(s["id"])))
+
+        # Keyboard: Tab moves between cards, Return or Space launches the
+        # focused one, and focus paints the same highlight as hover so you can
+        # see where you are.
+        card.bind("<Return>", lambda e, s=sim: self._launch(s["id"]))
+        card.bind("<space>", lambda e, s=sim: self._launch(s["id"]))
+        card.bind("<FocusIn>", lambda e, c=card, s=sim: self._on_card_focus(c, s, True))
+        card.bind("<FocusOut>", lambda e, c=card, s=sim: self._on_card_focus(c, s, False))
 
         return card
+
+    def _on_grid_resize(self, event):
+        """Keep the card grid the width of its canvas and the scrollbar honest."""
+        self.grid_canvas.itemconfigure(self._grid_window, width=event.width)
+        self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
+        needed = self.grid_inner.winfo_reqheight() > event.height
+        if needed and not self.grid_scroll.winfo_ismapped():
+            # 'before' restores the packing order: the scrollbar must claim its
+            # strip ahead of the expanding canvas or it gets no space at all.
+            self.grid_scroll.pack(side="right", fill="y", before=self.grid_canvas)
+        elif not needed and self.grid_scroll.winfo_ismapped():
+            self.grid_scroll.pack_forget()
+            self.grid_canvas.yview_moveto(0)
+
+    def _on_grid_scroll(self, event):
+        """Mouse-wheel scrolling, in the two flavours X11 and Windows/macOS use."""
+        if not self.grid_scroll.winfo_ismapped():
+            return
+        if getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+        else:
+            delta = -1 if event.delta > 0 else 1
+        self.grid_canvas.yview_scroll(delta, "units")
 
     def _on_card_enter(self, card, sim):
         if card._hover_active:
             return
         card._hover_active = True
         self._apply_hover(card, sim, True)
+
+    def _on_card_focus(self, card, sim, focused):
+        """Keyboard focus highlights a card exactly like hover does."""
+        card._focus_active = focused
+        if focused:
+            self._scroll_card_into_view(card)
+        self._apply_hover(card, sim, focused or card._hover_active)
+
+    def _scroll_card_into_view(self, card):
+        """Tabbing to a card below the fold must bring it on screen."""
+        try:
+            view_top = self.grid_canvas.canvasy(0)
+            view_h = self.grid_canvas.winfo_height()
+            total = max(1, self.grid_inner.winfo_reqheight())
+            top, bottom = card.winfo_y(), card.winfo_y() + card.winfo_height()
+            if top < view_top:
+                self.grid_canvas.yview_moveto(max(0.0, top / total))
+            elif bottom > view_top + view_h:
+                self.grid_canvas.yview_moveto(max(0.0, (bottom - view_h) / total))
+        except (tk.TclError, AttributeError):
+            pass
 
     def _on_card_leave(self, card, sim):
         # Check if mouse is still within the card bounds
@@ -2243,7 +3998,7 @@ class Launcher:
         except Exception:
             pass
         card._hover_active = False
-        self._apply_hover(card, sim, False)
+        self._apply_hover(card, sim, card._focus_active)
 
     def _apply_hover(self, card, sim, entering):
         bg = BG_CARD_HOVER if entering else BG_CARD
@@ -2265,6 +4020,7 @@ class Launcher:
         "code_build":    (CodeBuildSimulation,     True),
         "ai_training":   (AITrainingSimulation,    True),
         "matrix_rain":   (MatrixRainSimulation,    True),
+        "bi_trainer":    (BITrainerSimulation,     True),
         "docs":          (DocumentationViewer,     False),
     }
 
@@ -2315,11 +4071,27 @@ class Launcher:
                 )
             else:
                 self.active_sim = sim_class(self.root, self._show_launcher)
-        except Exception:
+        except Exception as exc:
             # If a simulation fails to start, restore the launcher instead of
-            # leaving the app withdrawn and seemingly frozen.
+            # leaving the app withdrawn and seemingly frozen. Print the cause:
+            # swallowing it silently turns a real bug into a dead-looking card.
+            traceback.print_exc()
             self.active_sim = None
             self._show_launcher()
+            self._flash_status(
+                f"⚠  {sim_id} could not start: {type(exc).__name__}. "
+                f"See the console for details.")
+
+    def _flash_status(self, message, seconds=8):
+        """Surface a problem in the launcher itself, not just on stdout."""
+        try:
+            self.status_label.config(text=message)
+            if self._status_after is not None:
+                self.root.after_cancel(self._status_after)
+            self._status_after = self.root.after(
+                seconds * 1000, lambda: self.status_label.config(text=""))
+        except tk.TclError:
+            pass
 
     def _show_launcher(self):
         """Return to the launcher after a simulation exits."""

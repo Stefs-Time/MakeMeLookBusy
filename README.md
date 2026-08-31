@@ -15,6 +15,7 @@ Desktop activity simulator with a glassmorphic launcher menu. Built with Python 
 | **Stay Active** | Silent keep-alive using micro mouse movements and shift key presses. Countdown timer with minimize support. Set duration and walk away. |
 | **Code Compiler** | Developer build & test pipeline: resolves dependencies, compiles modules, bundles assets, and runs a passing test suite with live scrolling output. |
 | **AI Model Training** | Neural-net training dashboard with live loss/accuracy curves, epoch counter, animated layer activations, and GPU telemetry. |
+| **THE BI Trainer** | Scrolling BI clinic: 12 chart types drawn live (column, line, stacked area, donut, scatter, histogram, heatmap, box, waterfall, funnel, Pareto, KPI tiles), each with the rules for reading it, the classic misreading to avoid, and the SQL / DAX / pandas code behind it. |
 | **Matrix Rain** | Fullscreen cascading green digital rain with glowing lead characters and fading trails. Hidden cursor, always-on-top, auto-exit. |
 | **Documentation** | Built-in viewer explaining every mode, keep-alive mechanics, and technical details. |
 
@@ -24,12 +25,16 @@ Desktop activity simulator with a glassmorphic launcher menu. Built with Python 
 - **Keep-alive intensity** — choose **Stealth**, **Normal**, or **Aggressive** timing profiles.
 - **🎲 Surprise Me** — launch a random simulation.
 - **Universal ESC** — press ESC to exit *any* simulation instantly.
+- **Scrolling card grid** — on short screens the grid scrolls, so every mode stays reachable.
+- **Keyboard navigation** — Tab between mode cards, Return/Space to launch the focused one.
+- **BI Trainer controls** — ← / → step through lessons, SPACE pauses the auto-advance.
 
 ## Requirements
 
 - Python 3.8+
 - Tkinter (included with most Python installations)
-- `pyautogui` (optional -- keep-alive features are disabled without it)
+- `pyautogui` (optional -- keep-alive features are disabled without it, including
+  on a headless Linux box with no X display)
 
 ## Installation
 
@@ -49,6 +54,7 @@ The glassmorphic launcher will open. Pick a simulation mode, set a duration (in 
 
 ### Controls
 
+- **Tab / Return / Space** -- Move between mode cards and launch the focused one
 - **ESC** -- Exit *any* simulation instantly (fullscreen or windowed)
 - **Stop / Minimize buttons** -- Exit or hide windowed simulations (Scanner, Defrag, Stay Active, Code Compiler, AI Training)
 - **pyautogui failsafe** -- Move mouse to screen corner (0, 0) to force-stop input injection
@@ -60,6 +66,7 @@ All simulation modes share a `KeepAliveEngine` that runs in a background daemon 
 - Moves the mouse by 1 pixel and back (plus the occasional 1-notch scroll)
 - Presses a harmless key (Shift / Ctrl / F13–F15, rotated)
 - Applies ±25% random jitter to every interval so the activity never looks robotic
+- Drops keys the OS keymap cannot produce (F13–F15 are unmapped on most Linux layouts)
 - Tracks live stats (mouse moves / key presses)
 
 Timing is governed by a selectable **intensity profile**:
@@ -86,7 +93,7 @@ test suite across Python 3.8 / 3.11 / 3.12.
 
 ## Technical Highlights
 
-- **Single-file architecture** -- entire app (9 modes) in one Python file
+- **Single-file architecture** -- entire app (10 modes) in one Python file
 - **Zero network calls** -- nothing is sent or received; fully offline
 - **Thread-safe design** -- `threading.Event` and locks for clean start/stop
 - **Graceful degradation** -- works without `pyautogui`, just without keep-alive
